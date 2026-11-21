@@ -14,6 +14,11 @@ pub const PERSISTENT_EXTEND_TO: u32 = 90 * DAY_IN_LEDGERS;
 pub const INSTANCE_THRESHOLD: u32 = 30 * DAY_IN_LEDGERS;
 pub const INSTANCE_EXTEND_TO: u32 = 90 * DAY_IN_LEDGERS;
 
+/// Minimum ledgers between proposing and executing an upgrade: one day at a
+/// 5-second close time. Long enough for watchers to alert and consumers to
+/// pause, short enough to ship a fix during an incident.
+pub const UPGRADE_DELAY_LEDGERS: u32 = DAY_IN_LEDGERS;
+
 /// Basis-point denominator: 10_000 bps = 100%.
 pub const BPS_DENOMINATOR: i128 = 10_000;
 
@@ -108,6 +113,14 @@ pub struct Coverage {
     pub supply_ledger: u32,
     pub supply_timestamp: u64,
     pub report_as_of: u64,
+}
+
+/// A proposed contract upgrade and the first ledger at which it may execute.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingUpgrade {
+    pub wasm_hash: BytesN<32>,
+    pub executable_at_ledger: u32,
 }
 
 /// `ceil(a * b / 10_000)` for non-negative `a` and `b`, or `None` when the
