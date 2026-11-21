@@ -102,6 +102,71 @@ Rules:
   watcher or front end can show what is scheduled and when it may execute.
 - The old immediate `upgrade(wasm_hash)` is removed from both contracts.
 
+## Storage and TTL
+
+All three contracts use the same TTL policy, defined in `plimsoll-types`:
+
+| Constant | Value | Meaning |
+| --- | --- | --- |
+| `DAY_IN_LEDGERS` | 17 280 | One day at 5-second close time. |
+| `PERSISTENT_THRESHOLD` | 30 days (518 400 ledgers) | Extend a persistent entry when its remaining TTL drops below this. |
+| `PERSISTENT_EXTEND_TO` | 90 days (1 555 200 ledgers) | Extend persistent entries up to this TTL. |
+| `INSTANCE_THRESHOLD` | 30 days (518 400 ledgers) | Extend instance storage when its remaining TTL drops below this. |
+| `INSTANCE_EXTEND_TO` | 90 days (1 555 200 ledgers) | Extend instance storage up to this TTL. |
+
+### Which operations extend which entries
+
+**reporter-registry**
+
+| Entry | Extended by |
+| --- | --- |
+| `Admin` (instance) | `__constructor`, `transfer_admin`, `upgrade`, `set_reporter`, `revoke` |
+| `Reporter(Address)` (persistent) | `set_reporter` (write), `get_reporter` / `role_of` (read) |
+
+**coverage-ledger**
+
+| Entry | Extended by |
+| --- | --- |
+| `Admin`, `Registry` (instance) | `__constructor`, `transfer_admin`, `upgrade`, `list_asset`, `post_supply`, `post_reserve` |
+| `Asset(Address)` (persistent) | `list_asset` (write), `get_asset` (read) |
+| `Supply(Address)` (persistent) | `post_supply` (write), `get_supply`, `coverage`, `is_covered` (read) |
+| `Report(Address, Tier)` (persistent) | `post_reserve` (write), `get_report`, `get_reports`, `coverage`, `is_covered` (read) |
+
+**covered-vault**
+
+| Entry | Extended by |
+| --- | --- |
+| `Config` (instance) | `__constructor`, `deposit`, `withdraw` |
+| `Balance(Address)` (persistent) | `deposit` (write), `withdraw` (write), `balance` (read) |
+
+### Archival behaviour
+
+When an entry's TTL reaches zero it is **archived** by the Soroban host. An
+archived entry is no longer accessible until it is explicitly restored (which
+requires paying the rent for the missed ledgers plus the new TTL).
+
+- **Read functions** (`get_reporter`, `role_of`, `get_asset`, `get_supply`,
+  `get_report`, `get_reports`, `coverage`, `is_covered`, `balance`, `config`,
+  `admin`, `registry`) return `None` (or `false` for `is_covered`) when the
+  entry they depend on is archived. They do **not** auto-restore.
+- **Write functions** (`set_reporter`, `revoke`, `list_asset`, `post_supply`,
+  `post_reserve`, `deposit`, `withdraw`, `transfer_admin`, `upgrade`) will
+  fail with a host trap if they try to read an archived entry they depend on
+  (e.g., `post_supply` reading an archived `Asset` entry). The caller must
+  first restore the archived entry using the Soroban RPC `restore` method and
+  pay the associated fee.
+- **`is_covered` on an archived asset**: if either the `Asset`, the latest
+  `Supply`, or the chosen `Report` entry is archived, the read returns `None`
+  / `false`. The consumer experiences the asset as "not covered" until the
+  missing entries are restored.
+
+### Re-add after revoke
+
+`reporter-registry.set_reporter` after a `revoke` creates a fresh
+`ReporterInfo` with a new `added_at = current ledger timestamp`. The previous
+`added_at` is not preserved. This is distinct from changing an existing
+reporter's role/name, which keeps the original `added_at`.
+
 ## reporter-registry
 
 Decides who may speak. Holds no money.
