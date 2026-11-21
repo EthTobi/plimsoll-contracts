@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Weekly, so new advisories surface even when nobody opens a PR.
+    - cron: "0 6 * * 1"
 
 jobs:
   test:
@@ -31,3 +34,10 @@ jobs:
         run: stellar contract build
       - name: Check wasm size budgets
         run: python3 scripts/check_wasm_sizes.py
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
