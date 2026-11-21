@@ -156,8 +156,8 @@ pub fn coverage_bps(reserves: i128, supply: i128) -> u32 {
     if whole > (u32::MAX as i128) / BPS_DENOMINATOR {
         return u32::MAX;
     }
-    let bps = whole as u64 * BPS_DENOMINATOR as u64
-        + fractional_bps(reserves % supply, supply) as u64;
+    let bps =
+        whole as u64 * BPS_DENOMINATOR as u64 + fractional_bps(reserves % supply, supply) as u64;
     if bps > u32::MAX as u64 {
         u32::MAX
     } else {
