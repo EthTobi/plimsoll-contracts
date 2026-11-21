@@ -3,9 +3,11 @@ extern crate std;
 use super::*;
 use reporter_registry::{ReporterRegistry, ReporterRegistryClient};
 use soroban_sdk::{
-    testutils::{Address as _, AuthorizedFunction, Ledger as _, MockAuth, MockAuthInvoke},
-    xdr::{ScErrorCode, ScErrorType},
-    Address, BytesN, Env, Error, IntoVal, String, Symbol,
+    testutils::{
+        Address as _, AuthorizedFunction, Events as _, Ledger as _, MockAuth, MockAuthInvoke,
+    },
+    xdr::{ContractEventBody, ScErrorCode, ScErrorType},
+    Address, BytesN, Env, Error, IntoVal, Map, String, Symbol, TryFromVal, Val,
 };
 
 const T0: u64 = 1_700_000_000;
@@ -80,6 +82,22 @@ fn uri(env: &Env) -> String {
     String::from_str(env, "https://example.org/attestation-2026-09.pdf")
 }
 
+/// The most recent event emitted by the ledger, decoded into the same
+/// `Vec<Val>` topics and `Map<Symbol, Val>` data the indexer sees.
+fn last_ledger_event(f: &Fixture) -> (Vec<Val>, Map<Symbol, Val>) {
+    let events = f.env.events().all().filter_by_contract(&f.ledger.address);
+    let event = events.events().last().expect("an event was emitted");
+    let body = match &event.body {
+        ContractEventBody::V0(body) => body,
+    };
+    let mut topics = Vec::new(&f.env);
+    for topic in body.topics.iter() {
+        topics.push_back(Val::try_from_val(&f.env, topic).unwrap());
+    }
+    let data = Val::try_from_val(&f.env, &body.data).unwrap();
+    (topics, Map::try_from_val(&f.env, &data).unwrap())
+}
+
 fn listed() -> Fixture {
     let f = setup();
     f.ledger.list_asset(&f.sac);
@@ -145,6 +163,111 @@ fn parse_accepts_real_name() {
             "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
         )
     );
+}
+
+// ---- events ---------------------------------------------------------------
+
+#[test]
+fn asset_listed_event_matches_the_documented_layout() {
+    let f = setup();
+    let record = f.ledger.list_asset(&f.sac);
+
+    let (topics, data) = last_ledger_event(&f);
+    let expected_topics: Vec<Val> =
+        (Symbol::new(&f.env, "asset_listed"), f.sac.clone()).into_val(&f.env);
+    assert_eq!(topics, expected_topics);
+    let expected_data = Map::from_array(
+        &f.env,
+        [
+            (
+                Symbol::new(&f.env, "code"),
+                record.code.clone().into_val(&f.env),
+            ),
+            (
+                Symbol::new(&f.env, "issuer"),
+                record.issuer.clone().into_val(&f.env),
+            ),
+        ],
+    );
+    assert_eq!(data, expected_data);
+}
+
+#[test]
+fn supply_posted_event_matches_the_documented_layout() {
+    let f = listed();
+    let amount = 1_000 * UNIT;
+    let ledger = 990u32;
+    let breakdown_hash = hash(&f.env, 1);
+    f.ledger
+        .post_supply(&f.poster, &f.sac, &amount, &ledger, &breakdown_hash);
+
+    let (topics, data) = last_ledger_event(&f);
+    let expected_topics: Vec<Val> =
+        (Symbol::new(&f.env, "supply_posted"), f.sac.clone()).into_val(&f.env);
+    assert_eq!(topics, expected_topics);
+    let expected_data = Map::from_array(
+        &f.env,
+        [
+            (Symbol::new(&f.env, "amount"), amount.into_val(&f.env)),
+            (Symbol::new(&f.env, "ledger"), ledger.into_val(&f.env)),
+            (
+                Symbol::new(&f.env, "breakdown_hash"),
+                breakdown_hash.into_val(&f.env),
+            ),
+            (
+                Symbol::new(&f.env, "poster"),
+                f.poster.clone().into_val(&f.env),
+            ),
+        ],
+    );
+    assert_eq!(data, expected_data);
+}
+
+#[test]
+fn reserve_posted_event_matches_the_documented_layout() {
+    let f = listed();
+    let amount = UNIT;
+    let as_of = T0 - 60;
+    let doc_hash = hash(&f.env, 2);
+    let doc_uri = uri(&f.env);
+    f.ledger
+        .post_reserve(&f.auditor, &f.sac, &amount, &as_of, &doc_hash, &doc_uri);
+
+    let (topics, data) = last_ledger_event(&f);
+    let expected_topics: Vec<Val> = (
+        Symbol::new(&f.env, "reserve_posted"),
+        f.sac.clone(),
+        Tier::AuditorSigned,
+    )
+        .into_val(&f.env);
+    assert_eq!(topics, expected_topics);
+    let expected_data = Map::from_array(
+        &f.env,
+        [
+            (Symbol::new(&f.env, "amount"), amount.into_val(&f.env)),
+            (Symbol::new(&f.env, "as_of"), as_of.into_val(&f.env)),
+            (
+                Symbol::new(&f.env, "reporter"),
+                f.auditor.clone().into_val(&f.env),
+            ),
+            (Symbol::new(&f.env, "doc_hash"), doc_hash.into_val(&f.env)),
+            (Symbol::new(&f.env, "doc_uri"), doc_uri.into_val(&f.env)),
+        ],
+    );
+    assert_eq!(data, expected_data);
+}
+
+#[test]
+fn admin_transferred_event_matches_the_documented_layout() {
+    let f = setup();
+    let next = Address::generate(&f.env);
+    f.ledger.transfer_admin(&next);
+
+    let (topics, data) = last_ledger_event(&f);
+    let expected_topics: Vec<Val> =
+        (Symbol::new(&f.env, "admin_transferred"), next).into_val(&f.env);
+    assert_eq!(topics, expected_topics);
+    assert_eq!(data, Map::<Symbol, Val>::new(&f.env));
 }
 
 // ---- post_supply ----------------------------------------------------------
