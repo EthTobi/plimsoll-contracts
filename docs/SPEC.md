@@ -50,9 +50,10 @@ it exists to show the integration in about 100 lines.
 
 Amounts are in the asset's smallest unit (Stellar classic assets: 7 decimals,
 so `1_0000000` is one unit). No floats anywhere. Coverage is basis points:
-`bps = reserves * 10_000 / supply`, rounded down, saturating at `u32::MAX`.
-When supply is zero, `bps = u32::MAX` (nothing is owed, so nothing is
-uncovered).
+`bps = reserves * 10_000 / supply`, rounded down. Non-positive reserves report
+`0` bps. Positive results saturate at `u32::MAX`, including when
+`reserves * 10_000` would overflow `i128`. When supply is zero or negative,
+`bps = u32::MAX` (nothing is owed, so nothing is uncovered).
 
 ## reporter-registry
 
