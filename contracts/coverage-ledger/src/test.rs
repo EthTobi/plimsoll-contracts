@@ -12,6 +12,7 @@ use soroban_sdk::{
 
 const T0: u64 = 1_700_000_000;
 const UNIT: i128 = 10_000_000;
+const UPGRADE_WASM: &[u8] = include_bytes!("../../../testdata/upgrade.wasm");
 
 struct Fixture {
     env: Env,
@@ -96,6 +97,19 @@ fn last_ledger_event(f: &Fixture) -> (Vec<Val>, Map<Symbol, Val>) {
     }
     let data = Val::try_from_val(&f.env, &body.data).unwrap();
     (topics, Map::try_from_val(&f.env, &data).unwrap())
+}
+
+fn last_ledger_topics(f: &Fixture) -> Vec<Val> {
+    let events = f.env.events().all().filter_by_contract(&f.ledger.address);
+    let event = events.events().last().expect("an event was emitted");
+    let body = match &event.body {
+        ContractEventBody::V0(body) => body,
+    };
+    let mut topics = Vec::new(&f.env);
+    for topic in body.topics.iter() {
+        topics.push_back(Val::try_from_val(&f.env, topic).unwrap());
+    }
+    topics
 }
 
 fn listed() -> Fixture {
@@ -1461,12 +1475,23 @@ fn old_admin_loses_upgrade_and_transfer_after_transfer() {
     f.ledger.transfer_admin(&next);
     assert_eq!(f.ledger.admin(), next);
 
-    // The old admin's signature on upgrade no longer carries any weight.
+    // The old admin's signature on any upgrade step no longer carries weight.
     authorise_only(
         &f,
-        &[(&old, "upgrade", (wasm_hash.clone(),).into_val(&f.env))],
+        &[(
+            &old,
+            "propose_upgrade",
+            (wasm_hash.clone(),).into_val(&f.env),
+        )],
     );
-    assert_eq!(f.ledger.try_upgrade(&wasm_hash), Err(Ok(auth_failure())));
+    assert_eq!(
+        f.ledger.try_propose_upgrade(&wasm_hash),
+        Err(Ok(auth_failure()))
+    );
+    authorise_only(&f, &[(&old, "execute_upgrade", ().into_val(&f.env))]);
+    assert_eq!(f.ledger.try_execute_upgrade(), Err(Ok(auth_failure())));
+    authorise_only(&f, &[(&old, "cancel_upgrade", ().into_val(&f.env))]);
+    assert_eq!(f.ledger.try_cancel_upgrade(), Err(Ok(auth_failure())));
 
     // Nor can the old admin hand the role on, even with the recipient's
     // signature.
@@ -1490,4 +1515,155 @@ fn old_admin_loses_upgrade_and_transfer_after_transfer() {
     );
     f.ledger.transfer_admin(&third);
     assert_eq!(f.ledger.admin(), third);
+}
+
+// ---- time-locked upgrades -------------------------------------------------
+
+fn upgrade_hash(env: &Env) -> BytesN<32> {
+    env.deployer().upload_contract_wasm(UPGRADE_WASM)
+}
+
+fn pending_storage(f: &Fixture) -> Option<PendingUpgrade> {
+    f.env.as_contract(&f.ledger.address, || {
+        f.env.storage().instance().get(&DataKey::PendingUpgrade)
+    })
+}
+
+#[test]
+fn propose_upgrade_stores_the_hash_and_execution_ledger() {
+    let f = setup();
+    let wasm_hash = upgrade_hash(&f.env);
+    f.ledger.propose_upgrade(&wasm_hash);
+
+    let (topics, data) = last_ledger_event(&f);
+    assert_eq!(
+        Symbol::try_from_val(&f.env, &topics.get(0).unwrap()).unwrap(),
+        Symbol::new(&f.env, "upgrade_proposed")
+    );
+    assert_eq!(
+        BytesN::<32>::try_from_val(&f.env, &topics.get(1).unwrap()).unwrap(),
+        wasm_hash
+    );
+    assert_eq!(
+        u32::try_from_val(
+            &f.env,
+            &data
+                .get(Symbol::new(&f.env, "executable_at_ledger"))
+                .unwrap()
+        )
+        .unwrap(),
+        1_000 + UPGRADE_DELAY_LEDGERS
+    );
+    assert_eq!(
+        f.ledger.pending_upgrade(),
+        Some(PendingUpgrade {
+            wasm_hash,
+            executable_at_ledger: 1_000 + UPGRADE_DELAY_LEDGERS,
+        })
+    );
+}
+
+#[test]
+fn execute_upgrade_before_the_delay_fails() {
+    let f = setup();
+    f.ledger.propose_upgrade(&upgrade_hash(&f.env));
+    f.env
+        .ledger()
+        .set_sequence_number(1_000 + UPGRADE_DELAY_LEDGERS - 1);
+
+    assert_eq!(
+        f.ledger.try_execute_upgrade(),
+        Err(Ok(LedgerError::UpgradeDelayNotElapsed.into()))
+    );
+    assert!(f.ledger.pending_upgrade().is_some());
+}
+
+#[test]
+fn execute_upgrade_without_a_proposal_fails() {
+    let f = setup();
+    assert_eq!(
+        f.ledger.try_execute_upgrade(),
+        Err(Ok(LedgerError::UpgradeNotProposed.into()))
+    );
+}
+
+#[test]
+fn execute_upgrade_after_the_delay_installs_the_wasm() {
+    let f = setup();
+    let wasm_hash = upgrade_hash(&f.env);
+    f.ledger.propose_upgrade(&wasm_hash);
+    f.env
+        .ledger()
+        .set_sequence_number(1_000 + UPGRADE_DELAY_LEDGERS);
+
+    f.ledger.execute_upgrade();
+
+    let topics = last_ledger_topics(&f);
+    assert_eq!(
+        Symbol::try_from_val(&f.env, &topics.get(0).unwrap()).unwrap(),
+        Symbol::new(&f.env, "upgrade_executed")
+    );
+    assert_eq!(
+        BytesN::<32>::try_from_val(&f.env, &topics.get(1).unwrap()).unwrap(),
+        wasm_hash
+    );
+    assert_eq!(pending_storage(&f), None);
+}
+
+#[test]
+fn cancel_upgrade_clears_the_proposal() {
+    let f = setup();
+    let wasm_hash = upgrade_hash(&f.env);
+    f.ledger.propose_upgrade(&wasm_hash);
+    f.ledger.cancel_upgrade();
+
+    let topics = last_ledger_topics(&f);
+    assert_eq!(
+        Symbol::try_from_val(&f.env, &topics.get(0).unwrap()).unwrap(),
+        Symbol::new(&f.env, "upgrade_cancelled")
+    );
+    assert_eq!(
+        BytesN::<32>::try_from_val(&f.env, &topics.get(1).unwrap()).unwrap(),
+        wasm_hash
+    );
+    assert_eq!(f.ledger.pending_upgrade(), None);
+    assert_eq!(
+        f.ledger.try_execute_upgrade(),
+        Err(Ok(LedgerError::UpgradeNotProposed.into()))
+    );
+}
+
+#[test]
+fn cancel_upgrade_without_a_proposal_fails() {
+    let f = setup();
+    assert_eq!(
+        f.ledger.try_cancel_upgrade(),
+        Err(Ok(LedgerError::UpgradeNotProposed.into()))
+    );
+}
+
+#[test]
+fn a_new_proposal_restarts_the_clock() {
+    let f = setup();
+    let first = upgrade_hash(&f.env);
+    f.ledger.propose_upgrade(&first);
+
+    f.env.ledger().set_sequence_number(1_500);
+    let second = f.env.deployer().upload_contract_wasm(UPGRADE_WASM);
+    f.ledger.propose_upgrade(&second);
+
+    assert_eq!(
+        f.ledger.pending_upgrade(),
+        Some(PendingUpgrade {
+            wasm_hash: second,
+            executable_at_ledger: 1_500 + UPGRADE_DELAY_LEDGERS,
+        })
+    );
+    f.env
+        .ledger()
+        .set_sequence_number(1_000 + UPGRADE_DELAY_LEDGERS);
+    assert_eq!(
+        f.ledger.try_execute_upgrade(),
+        Err(Ok(LedgerError::UpgradeDelayNotElapsed.into()))
+    );
 }
