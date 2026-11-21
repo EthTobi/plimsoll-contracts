@@ -3,9 +3,9 @@ extern crate std;
 use super::*;
 use reporter_registry::{ReporterRegistry, ReporterRegistryClient};
 use soroban_sdk::{
-    testutils::{Address as _, AuthorizedFunction, Ledger as _, MockAuth, MockAuthInvoke},
-    xdr::{ScErrorCode, ScErrorType},
-    Address, Bytes, BytesN, Env, Error, IntoVal, String, Symbol,
+    testutils::{Address as _, AuthorizedFunction, Events, Ledger as _, MockAuth, MockAuthInvoke},
+    xdr::{ContractEventBody, ScErrorCode, ScErrorType},
+    Address, Bytes, BytesN, Env, Error, IntoVal, Map, String, Symbol, TryFromVal, Val,
 };
 
 const T0: u64 = 1_700_000_000;
