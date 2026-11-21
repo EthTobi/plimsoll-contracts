@@ -88,9 +88,7 @@ fn uri(env: &Env) -> String {
 fn last_ledger_event(f: &Fixture) -> (Vec<Val>, Map<Symbol, Val>) {
     let events = f.env.events().all().filter_by_contract(&f.ledger.address);
     let event = events.events().last().expect("an event was emitted");
-    let body = match &event.body {
-        ContractEventBody::V0(body) => body,
-    };
+    let ContractEventBody::V0(body) = &event.body;
     let mut topics = Vec::new(&f.env);
     for topic in body.topics.iter() {
         topics.push_back(Val::try_from_val(&f.env, topic).unwrap());
@@ -102,9 +100,7 @@ fn last_ledger_event(f: &Fixture) -> (Vec<Val>, Map<Symbol, Val>) {
 fn last_ledger_topics(f: &Fixture) -> Vec<Val> {
     let events = f.env.events().all().filter_by_contract(&f.ledger.address);
     let event = events.events().last().expect("an event was emitted");
-    let body = match &event.body {
-        ContractEventBody::V0(body) => body,
-    };
+    let ContractEventBody::V0(body) = &event.body;
     let mut topics = Vec::new(&f.env);
     for topic in body.topics.iter() {
         topics.push_back(Val::try_from_val(&f.env, topic).unwrap());
