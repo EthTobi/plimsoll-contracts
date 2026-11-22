@@ -42,6 +42,10 @@ Out of scope:
 - Supply snapshots are computed off-chain by a registered poster. They are
   verifiable (the breakdown hash is on-chain) but not proven on-chain.
 
+The full picture is in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md). For
+every actor it lists what they can make the ledger say, what limits them
+today, the known gaps with their issues, and what an integrator should do.
+
 ## Upgrades
 
 Both stateful contracts (`reporter-registry`, `coverage-ledger`) upgrade in
@@ -61,3 +65,10 @@ pin the wasm hash they audited and treat a proposal as a signal to migrate.
 The upgrade entry point is itself admin-only and emits an event for every
 step, so a proposal that was never announced on-chain did not come from this
 contract.
+
+The time lock is in the code in this repository. The contracts currently live
+on testnet predate it and still expose an immediate, event-less
+`upgrade(wasm_hash)` until they are moved onto this code once. That move, and
+every later upgrade, is a step-by-step procedure in
+[docs/RUNBOOK.md](docs/RUNBOOK.md). To check what a deployment actually runs,
+use `scripts/verify-deployment.sh <network>`.
