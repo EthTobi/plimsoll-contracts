@@ -134,6 +134,7 @@ All three contracts use the same TTL policy, defined in `plimsoll-types`:
 | `Asset(Address)` (persistent) | `list_asset` (write), `get_asset` (read) |
 | `Supply(Address)` (persistent) | `post_supply` (write), `get_supply`, `coverage`, `is_covered` (read) |
 | `Report(Address, Tier)` (persistent) | `post_reserve` (write), `get_report`, `get_reports`, `coverage`, `is_covered` (read) |
+| `Assets` (persistent) | `list_asset` (write), `asset_reporter_pairs` (read) |
 
 **covered-vault**
 
@@ -221,6 +222,7 @@ Records what was said, and answers coverage questions.
 | `Supply(Address)` | persistent | `SupplySnapshot` (latest only) |
 | `ReportBy(Address, Tier, Address)` | persistent | `ReserveReport`: the latest from one reporter at one tier for one asset |
 | `Reporters(Address, Tier)` | persistent | `Vec<Address>`: the reporters with a `ReportBy` entry at that tier, in the order they first posted; at most `MAX_REPORTERS_PER_TIER = 4` |
+| `Assets` | persistent | `Vec<Address>`: every listed asset, in listing order. The `asset_reporter_pairs` index |
 | `Report(Address, Tier)` | persistent | `ReserveReport`: the v0.1 layout (one per tier). Read until migrated, never written; see [Upgrading a v0.1 deployment](#upgrading-a-v01-deployment) |
 
 Every reporter keeps their own figure. Two auditors' reports coexist, and a
@@ -267,6 +269,8 @@ data layouts, with real testnet examples, are in [EVENTS.md](EVENTS.md).
 | `get_supply(sac)` | — | `Option<SupplySnapshot>` | — | — |
 | `get_report(sac, tier: Tier)` | — | `Option<ReserveReport>` (the freshest report at that tier that counts) | — | — |
 | `get_reports(sac)` | — | `Vec<ReserveReport>` (every stored report that counts: strongest tier first, then first-post order within a tier) | — | — |
+| `reporter_last_post(reporter: Address, asset: Address)` | — | `Option<u64>` (the ledger timestamp of that reporter's most recent post for the asset) | — | — |
+| `asset_reporter_pairs(cursor: Option<u32>, limit: u32)` | — | `Vec<(Address, Address)>` (up to `MAX_PAIRS_PER_CALL = 50` (asset, reporter) pairs) | — | — |
 | `coverage(sac, min_tier: Tier)` | — | `Option<Coverage>` | — | — |
 | `is_covered(sac, min_bps: u32, max_age: u64, min_tier: Tier)` | — | `bool` | — | — |
 | `registry()` / `admin()` | — | `Address` | — | — |
@@ -317,6 +321,29 @@ Rules:
   `None` if there is no supply snapshot or no qualifying report.
 - `is_covered` is true only if `coverage` is `Some`, both the supply snapshot
   and the report are no older than `max_age` seconds, and `bps >= min_bps`.
+- `reporter_last_post(reporter, asset)` answers with the `posted_at` of the
+  reporter's most recent post for the asset, across every tier, including a
+  not-yet-migrated v0.1 entry from that reporter. It is the time of the post,
+  not the figure's `as_of`. The registry is not consulted, so a revoked
+  reporter still answers, and `get_reports` is what says which of their
+  figures still count. `None` means the reporter has never posted for that
+  asset.
+- `asset_reporter_pairs(cursor, limit)` lists the (asset, reporter) pairs the
+  stored indexes hold, for an indexer bootstrapping its dataset. Assets come
+  in listing order, and within an asset the tiers strongest first
+  (`AuditorSigned`, `IssuerSigned`, `Transcribed`), first-post order within a
+  tier; a reporter with entries at more than one tier appears once. Pairs come
+  from the indexes alone, so a reporter whose figure no longer counts still
+  appears. `cursor` is the index of the first pair to return and defaults to
+  `0`, `limit` is capped at `MAX_PAIRS_PER_CALL = 50`, and an empty page means
+  the cursor is at or past the last pair. The cost of a page grows with its
+  cursor, because the assets before it are walked to count their pairs.
+- `list_asset` appends the asset to the `Assets` index. The index starts empty
+  in this version, so an asset listed by earlier code is absent from
+  `asset_reporter_pairs` until it is listed again — which `AlreadyListed`
+  prevents — while `get_asset`, `get_supply`, `get_reports` and `coverage`
+  keep answering for it. Its `asset_listed` event remains the record that it
+  was listed.
 
 Errors (`LedgerError`): `NotAStellarAsset = 1`, `AlreadyListed = 2`,
 `AssetNotListed = 3`, `NotSupplyPoster = 4`, `NotReporter = 5`,
