@@ -628,10 +628,11 @@ impl CoverageLedger {
         let resolved = read_persistent::<Address>(&env, &DataKey::Alias(sac.clone()))
             .unwrap_or_else(|| sac.clone());
         // Load supply first; bail before any report reads when absent or stale.
-        let supply = match read_persistent::<SupplySnapshot>(&env, &DataKey::Supply(resolved.clone())) {
-            Some(s) => s,
-            None => return false,
-        };
+        let supply =
+            match read_persistent::<SupplySnapshot>(&env, &DataKey::Supply(resolved.clone())) {
+                Some(s) => s,
+                None => return false,
+            };
         let now = env.ledger().timestamp();
         if now.saturating_sub(supply.timestamp) > max_age {
             return false;
