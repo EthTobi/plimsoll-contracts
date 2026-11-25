@@ -4,9 +4,10 @@
 #![no_std]
 
 use plimsoll_types::{
-    coverage_bps, AssetRecord, Coverage, PendingUpgrade, RegistryClient, ReserveReport, Role,
-    SupplySnapshot, Tier, INSTANCE_EXTEND_TO, INSTANCE_THRESHOLD, MAX_PLAUSIBLE_BPS,
-    MIN_PLAUSIBLE_BPS, PERSISTENT_EXTEND_TO, PERSISTENT_THRESHOLD, UPGRADE_DELAY_LEDGERS,
+    coverage_bps, AssetRecord, Coverage, CoverageStatus, CoveredInfo, PendingUpgrade,
+    RegistryClient, ReserveReport, Role, StaleInfo, SupplySnapshot, Tier, INSTANCE_EXTEND_TO,
+    INSTANCE_THRESHOLD, MAX_PLAUSIBLE_BPS, MIN_PLAUSIBLE_BPS, PERSISTENT_EXTEND_TO,
+    PERSISTENT_THRESHOLD, SECONDS_PER_LEDGER, UPGRADE_DELAY_LEDGERS,
 };
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, token,
@@ -590,16 +591,44 @@ impl CoverageLedger {
     /// True when both the supply snapshot and the chosen report are at most
     /// `max_age` seconds old and coverage is at least `min_bps`.
     pub fn is_covered(env: Env, sac: Address, min_bps: u32, max_age: u64, min_tier: Tier) -> bool {
+        match Self::coverage_status(env.clone(), sac, min_bps, max_age, min_tier) {
+            CoverageStatus::Paused => panic_with_error!(&env, LedgerError::Paused),
+            CoverageStatus::Covered(_) => true,
+            CoverageStatus::Stale(_) | CoverageStatus::Uncovered => false,
+        }
+    }
+
+    /// `coverage` with the reason attached, in one call. Precedence: paused,
+    /// then stale (the last ratio is not a verdict on backing), then
+    /// under-backed, then covered.
+    pub fn coverage_status(
+        env: Env,
+        sac: Address,
+        min_bps: u32,
+        max_age: u64,
+        min_tier: Tier,
+    ) -> CoverageStatus {
         if paused_flag(&env) {
-            panic_with_error!(&env, LedgerError::Paused);
+            return CoverageStatus::Paused;
         }
         let coverage = match Self::coverage(env.clone(), sac, min_tier) {
             Some(c) => c,
-            None => return false,
+            None => return CoverageStatus::Uncovered,
         };
         let now = env.ledger().timestamp();
-        let fresh = |t: u64| now.saturating_sub(t) <= max_age;
-        fresh(coverage.supply_timestamp) && fresh(coverage.report_as_of) && coverage.bps >= min_bps
+        let age = now
+            .saturating_sub(coverage.supply_timestamp)
+            .max(now.saturating_sub(coverage.report_as_of));
+        if age > max_age {
+            return CoverageStatus::Stale(StaleInfo {
+                last_bps: coverage.bps,
+                age_ledgers: (age / SECONDS_PER_LEDGER).min(u32::MAX as u64) as u32,
+            });
+        }
+        if coverage.bps < min_bps {
+            return CoverageStatus::Uncovered;
+        }
+        CoverageStatus::Covered(CoveredInfo { bps: coverage.bps })
     }
 
     /// Stop recording figures and answering `is_covered` during an incident.

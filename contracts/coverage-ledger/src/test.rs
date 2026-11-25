@@ -1805,3 +1805,148 @@ fn unpausing_restores_posting_and_is_covered() {
         .ledger
         .is_covered(&f.sac, &10_000, &86_400, &Tier::Transcribed));
 }
+
+// ---- coverage_status (#98) ------------------------------------------------
+
+fn covered() -> Fixture {
+    let f = listed();
+    supply(&f, 100 * UNIT);
+    post(&f, &f.issuer, 100 * UNIT, T0);
+    f
+}
+
+#[test]
+fn coverage_status_covers_fresh_figures_with_the_ratio() {
+    let f = covered();
+    assert_eq!(
+        f.ledger
+            .coverage_status(&f.sac, &10_000, &86_400, &Tier::Transcribed),
+        CoverageStatus::Covered(CoveredInfo { bps: 10_000 })
+    );
+}
+
+#[test]
+fn coverage_status_reports_fresh_shortfall_as_uncovered() {
+    let f = listed();
+    supply(&f, 100 * UNIT);
+    post(&f, &f.issuer, 90 * UNIT, T0);
+    assert_eq!(
+        f.ledger
+            .coverage_status(&f.sac, &10_000, &86_400, &Tier::Transcribed),
+        CoverageStatus::Uncovered
+    );
+    // The ratio is still a pass when the caller asks for less.
+    assert_eq!(
+        f.ledger
+            .coverage_status(&f.sac, &9_000, &86_400, &Tier::Transcribed),
+        CoverageStatus::Covered(CoveredInfo { bps: 9_000 })
+    );
+}
+
+#[test]
+fn coverage_status_reports_missing_figures_as_uncovered() {
+    let f = listed();
+    assert_eq!(
+        f.ledger
+            .coverage_status(&f.sac, &0, &u64::MAX, &Tier::Transcribed),
+        CoverageStatus::Uncovered
+    );
+    // Supply alone is not a coverage answer.
+    supply(&f, 100 * UNIT);
+    assert_eq!(
+        f.ledger
+            .coverage_status(&f.sac, &0, &u64::MAX, &Tier::Transcribed),
+        CoverageStatus::Uncovered
+    );
+}
+
+#[test]
+fn coverage_status_reports_stale_with_the_last_ratio_and_age() {
+    let f = covered();
+    let day = 86_400;
+    f.env.ledger().set_timestamp(T0 + 2 * day);
+
+    assert_eq!(
+        f.ledger
+            .coverage_status(&f.sac, &10_000, &day, &Tier::Transcribed),
+        CoverageStatus::Stale(StaleInfo {
+            last_bps: 10_000,
+            age_ledgers: (2 * day / SECONDS_PER_LEDGER) as u32
+        })
+    );
+}
+
+#[test]
+fn stale_wins_over_under_backed() {
+    let f = covered();
+    let day = 86_400;
+    f.env.ledger().set_timestamp(T0 + 2 * day);
+
+    // Asking for more than the last ratio still reports Stale, because a
+    // stale ratio is not a verdict on backing.
+    assert_eq!(
+        f.ledger
+            .coverage_status(&f.sac, &10_001, &day, &Tier::Transcribed),
+        CoverageStatus::Stale(StaleInfo {
+            last_bps: 10_000,
+            age_ledgers: (2 * day / SECONDS_PER_LEDGER) as u32
+        })
+    );
+}
+
+#[test]
+fn coverage_status_reports_the_oldest_of_supply_and_report() {
+    let f = listed();
+    // Supply posted now, the report describes a figure two days old.
+    supply(&f, 100 * UNIT);
+    post(&f, &f.issuer, 100 * UNIT, T0 - 2 * 86_400);
+
+    assert_eq!(
+        f.ledger
+            .coverage_status(&f.sac, &10_000, &86_400, &Tier::Transcribed),
+        CoverageStatus::Stale(StaleInfo {
+            last_bps: 10_000,
+            age_ledgers: (2 * 86_400 / SECONDS_PER_LEDGER) as u32
+        })
+    );
+}
+
+#[test]
+fn coverage_status_reports_paused_before_anything_else() {
+    let f = listed();
+    f.ledger.pause();
+    assert_eq!(
+        f.ledger
+            .coverage_status(&f.sac, &10_000, &86_400, &Tier::Transcribed),
+        CoverageStatus::Paused
+    );
+
+    let f = covered();
+    f.ledger.pause();
+    assert_eq!(
+        f.ledger
+            .coverage_status(&f.sac, &0, &u64::MAX, &Tier::Transcribed),
+        CoverageStatus::Paused
+    );
+}
+
+#[test]
+fn coverage_status_uses_min_tier_and_bps_like_is_covered() {
+    let f = covered();
+    let day = 86_400;
+    for (min_bps, max_age, min_tier) in [
+        (10_000u32, day, Tier::Transcribed),
+        (10_001, day, Tier::Transcribed),
+        (10_000, day - 1, Tier::Transcribed),
+        (10_000, day, Tier::AuditorSigned),
+        (0, u64::MAX, Tier::Transcribed),
+    ] {
+        assert_eq!(
+            f.ledger
+                .coverage_status(&f.sac, &min_bps, &max_age, &min_tier)
+                == CoverageStatus::Covered(CoveredInfo { bps: 10_000 }),
+            f.ledger.is_covered(&f.sac, &min_bps, &max_age, &min_tier),
+            "disagreed for ({min_bps}, {max_age}, {min_tier:?})"
+        );
+    }
+}

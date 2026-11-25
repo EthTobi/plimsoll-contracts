@@ -51,7 +51,9 @@ it exists to show the integration in about 100 lines.
 | `ReserveReport` | struct | `amount: i128`, `as_of: u64`, `posted_at: u64`, `tier: Tier`, `reporter: Address`, `doc_hash: BytesN<32>`, `doc_uri: String` |
 | `Coverage` | struct | `bps: u32`, `supply: i128`, `reserves: i128`, `tier: Tier`, `supply_ledger: u32`, `supply_timestamp: u64`, `report_as_of: u64` |
 | `PendingUpgrade` | struct | `wasm_hash: BytesN<32>`, `executable_at_ledger: u32` |
-| `CoverageStatus` | `u32` enum | `Covered { bps: u32 }`, `Stale { last_bps: u32, age_ledgers: u32 }`, `Uncovered`, `Paused` |
+| `CoveredInfo` | struct | `bps: u32` |
+| `StaleInfo` | struct | `last_bps: u32`, `age_ledgers: u32` |
+| `CoverageStatus` | enum | `Covered(CoveredInfo)`, `Stale(StaleInfo)`, `Uncovered`, `Paused` |
 
 Amounts are in the asset's smallest unit (Stellar classic assets: 7 decimals,
 so `1_0000000` is one unit). No floats anywhere. Coverage is basis points:
@@ -367,8 +369,8 @@ when absent, so an upgrade from a deployment without it starts unpaused.
 | --- | --- |
 | `Paused` | The ledger is paused. Nothing is being recorded or gated. |
 | `Uncovered` | There is no supply figure, no qualifying report, or fresh figures give `bps < min_bps`. |
-| `Stale { last_bps, age_ledgers }` | Figures exist and at least one of supply or report is older than `max_age` seconds. `last_bps` is the ratio they last gave; `age_ledgers` is the age of the older of the two, in whole ledgers (`max_age` seconds divided by the 5-second close time, rounded down). |
-| `Covered { bps }` | Fresh figures give at least `min_bps`. |
+| `Stale(StaleInfo { last_bps, age_ledgers })` | Figures exist and at least one of supply or report is older than `max_age` seconds. `last_bps` is the ratio they last gave; `age_ledgers` is the age of the older of the two in whole ledgers (seconds divided by the 5-second close time, rounded down). |
+| `Covered(CoveredInfo { bps })` | Fresh figures give at least `min_bps`. |
 
 The order is deliberate: paused first, stale second (a stale ratio is not a
 verdict on backing), then under-backed, then covered. `age_ledgers` is derived
