@@ -348,6 +348,25 @@ fn post_supply_rejects_future_ledger() {
 }
 
 #[test]
+fn post_supply_accepts_snapshot_at_maximum_age() {
+    let f = listed();
+    let ledger = 1_000 - MAX_SUPPLY_LEDGER_AGE;
+    f.ledger
+        .post_supply(&f.poster, &f.sac, &UNIT, &ledger, &hash(&f.env, 1));
+    assert_eq!(f.ledger.get_supply(&f.sac).unwrap().ledger, ledger);
+}
+
+#[test]
+fn post_supply_rejects_snapshot_older_than_maximum_age() {
+    let f = listed();
+    let ledger = 1_000 - MAX_SUPPLY_LEDGER_AGE - 1;
+    let res = f
+        .ledger
+        .try_post_supply(&f.poster, &f.sac, &UNIT, &ledger, &hash(&f.env, 1));
+    assert_eq!(res, Err(Ok(LedgerError::LedgerTooOld.into())));
+}
+
+#[test]
 fn post_supply_must_move_forward() {
     let f = listed();
     f.ledger
@@ -848,6 +867,109 @@ fn post(f: &Fixture, who: &Address, amount: i128, as_of: u64) -> Tier {
 fn supply(f: &Fixture, amount: i128) {
     f.ledger
         .post_supply(&f.poster, &f.sac, &amount, &990, &hash(&f.env, 1));
+}
+
+#[test]
+fn retract_reserve_removes_only_the_callers_report_and_falls_back() {
+    let f = listed();
+    supply(&f, 100 * UNIT);
+    let second = add_reporter(&f, Role::Auditor);
+    post(&f, &f.auditor, 90 * UNIT, T0 - 100);
+    post(&f, &second, 95 * UNIT, T0 - 10);
+
+    f.ledger.retract_reserve(&second, &f.sac);
+
+    let (topics, data) = last_ledger_event(&f);
+    let expected_topics: Vec<Val> = (
+        Symbol::new(&f.env, "reserve_retracted"),
+        f.sac.clone(),
+        Tier::AuditorSigned,
+    )
+        .into_val(&f.env);
+    assert_eq!(topics, expected_topics);
+    let expected_data = Map::from_array(
+        &f.env,
+        [
+            (
+                Symbol::new(&f.env, "reporter"),
+                second.clone().into_val(&f.env),
+            ),
+            (Symbol::new(&f.env, "as_of"), (T0 - 10).into_val(&f.env)),
+        ],
+    );
+    assert_eq!(data, expected_data);
+
+    let remaining = f.ledger.get_report(&f.sac, &Tier::AuditorSigned).unwrap();
+    assert_eq!(remaining.reporter, f.auditor);
+    assert_eq!(remaining.amount, 90 * UNIT);
+    assert_eq!(
+        f.ledger
+            .coverage(&f.sac, &Tier::AuditorSigned)
+            .unwrap()
+            .reserves,
+        90 * UNIT
+    );
+
+    f.ledger.retract_reserve(&f.auditor, &f.sac);
+    assert!(f.ledger.coverage(&f.sac, &Tier::AuditorSigned).is_none());
+}
+
+#[test]
+fn retract_reserve_rejects_a_reporter_who_did_not_post_it() {
+    let f = listed();
+    let other = add_reporter(&f, Role::Auditor);
+    post(&f, &f.auditor, UNIT, T0);
+
+    let res = f.ledger.try_retract_reserve(&other, &f.sac);
+    assert_eq!(res, Err(Ok(LedgerError::NoReportToRetract.into())));
+    assert_eq!(f.ledger.get_reports(&f.sac).len(), 1);
+}
+
+#[test]
+fn retract_reserve_rejects_when_the_reporter_has_nothing_to_retract() {
+    let f = listed();
+    let res = f.ledger.try_retract_reserve(&f.auditor, &f.sac);
+    assert_eq!(res, Err(Ok(LedgerError::NoReportToRetract.into())));
+}
+
+#[test]
+fn retract_reserve_rejects_an_unregistered_reporter() {
+    let f = listed();
+    let res = f.ledger.try_retract_reserve(&f.poster, &f.sac);
+    assert_eq!(res, Err(Ok(LedgerError::NotReporter.into())));
+}
+
+#[test]
+fn retract_reserve_requires_the_reporters_authorisation() {
+    let f = listed();
+    post(&f, &f.auditor, UNIT, T0);
+    authorise_only(&f, &[]);
+
+    assert_eq!(
+        f.ledger.try_retract_reserve(&f.auditor, &f.sac),
+        Err(Ok(auth_failure()))
+    );
+    assert_eq!(f.ledger.get_reports(&f.sac).len(), 1);
+}
+
+#[test]
+fn retract_reserve_requires_a_listed_asset() {
+    let f = setup();
+    let res = f.ledger.try_retract_reserve(&f.auditor, &f.sac);
+    assert_eq!(res, Err(Ok(LedgerError::AssetNotListed.into())));
+}
+
+#[test]
+fn a_reporter_can_repost_after_retraction() {
+    let f = listed();
+    post(&f, &f.auditor, UNIT, T0 - 10);
+    f.ledger.retract_reserve(&f.auditor, &f.sac);
+
+    post(&f, &f.auditor, 2 * UNIT, T0 - 10);
+
+    let report = f.ledger.get_report(&f.sac, &Tier::AuditorSigned).unwrap();
+    assert_eq!(report.amount, 2 * UNIT);
+    assert_eq!(report.as_of, T0 - 10);
 }
 
 #[test]

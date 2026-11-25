@@ -61,6 +61,8 @@ codes as literal numbers, so a renumbering fails CI.
 | 11 | | [`InvalidUri`](#11-invaliduri) | |
 | 12 | | [`ImplausibleAmount`](#12-implausibleamount) | |
 | 13 | | [`TooManyReporters`](#13-toomanyreporters) | |
+| 16 | | [`LedgerTooOld`](#16-ledgertooold) | |
+| 17 | | [`NoReportToRetract`](#17-noreporttoretract) | |
 
 ## RegistryError
 
@@ -92,8 +94,9 @@ when several apply the caller sees the first:
 | Function | Order checked |
 | --- | --- |
 | `list_asset` | `NotAStellarAsset` (not a SAC), `AlreadyListed`, `NotAStellarAsset` (SAC name has no issuer) |
-| `post_supply` | auth, `NotSupplyPoster`, `AssetNotListed`, `InvalidAmount`, `FutureLedger`, `StaleLedger` |
+| `post_supply` | auth, `NotSupplyPoster`, `AssetNotListed`, `InvalidAmount`, `FutureLedger`, `LedgerTooOld`, `StaleLedger` |
 | `post_reserve` | auth, `AssetNotListed`, `NotReporter`, `InvalidAmount`, `InvalidUri`, `FutureTimestamp`, `ImplausibleAmount`, `StaleReport`, `TooManyReporters` |
+| `retract_reserve` | auth, `AssetNotListed`, `NotReporter`, `NoReportToRetract` |
 
 ### 1 `NotAStellarAsset`
 
@@ -224,6 +227,25 @@ when several apply the caller sees the first:
   reporter needs a maintainer to revoke one of the four with
   `reporter-registry.revoke`. Their slot is reclaimed by the next
   `post_reserve` at that tier.
+
+### 16 `LedgerTooOld`
+
+- **Raised by:** `post_supply(poster, sac, amount, ledger, breakdown_hash)`.
+- **Cause:** `ledger` is more than 720 ledgers behind the current ledger
+  (approximately one hour at Stellar's usual five-second ledger cadence).
+  `post_supply` stores the submission time, so without this sequence bound an
+  old figure could be presented as a fresh snapshot.
+- **Remedy:** Recompute supply from a recent ledger and post its sequence.
+  Exactly 720 ledgers of lag is accepted.
+
+### 17 `NoReportToRetract`
+
+- **Raised by:** `retract_reserve(reporter, sac)`.
+- **Cause:** The authorised reporter has no stored report for the tier their
+  identity currently resolves to. This includes signing with a different
+  reporter address, even when another reporter has a report at that tier.
+- **Remedy:** Sign with the address that posted the report, and confirm the
+  report still exists at the reporter's current tier.
 
 ## VaultError
 
