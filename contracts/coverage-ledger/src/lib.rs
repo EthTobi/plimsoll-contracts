@@ -37,6 +37,8 @@ enum DataKey {
     ReportBy(Address, Tier, Address),
     /// Reporters with a `ReportBy` entry at (sac, tier), in first-post order.
     Reporters(Address, Tier),
+    /// Incident switch. Absent means not paused.
+    Paused,
 }
 
 #[contracterror]
@@ -58,6 +60,7 @@ pub enum LedgerError {
     TooManyReporters = 13,
     UpgradeNotProposed = 14,
     UpgradeDelayNotElapsed = 15,
+    Paused = 16,
 }
 
 #[contractevent]
@@ -99,6 +102,18 @@ pub struct ReservePosted {
 pub struct AdminTransferred {
     #[topic]
     pub new_admin: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Paused {
+    pub by: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Unpaused {
+    pub by: Address,
 }
 
 #[contractevent]
@@ -148,6 +163,22 @@ fn bump_instance(env: &Env) {
 
 fn pending(env: &Env) -> Option<PendingUpgrade> {
     env.storage().instance().get(&DataKey::PendingUpgrade)
+}
+
+fn paused_flag(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::Paused)
+        .unwrap_or(false)
+}
+
+/// Stop a write at the door while the incident switch is on. Checked after
+/// authentication and before every other write error, so the pause is the
+/// reason callers see.
+fn require_not_paused(env: &Env) {
+    if paused_flag(env) {
+        panic_with_error!(env, LedgerError::Paused);
+    }
 }
 
 fn read_persistent<V: soroban_sdk::TryFromVal<Env, soroban_sdk::Val>>(
@@ -377,6 +408,7 @@ impl CoverageLedger {
         breakdown_hash: BytesN<32>,
     ) {
         poster.require_auth();
+        require_not_paused(&env);
         let role = RegistryClient::new(&env, &registry(&env)).role_of(&poster);
         if role != Some(Role::SupplyPoster) {
             panic_with_error!(&env, LedgerError::NotSupplyPoster);
@@ -426,6 +458,7 @@ impl CoverageLedger {
         doc_uri: String,
     ) -> Tier {
         reporter.require_auth();
+        require_not_paused(&env);
         let asset = require_listed(&env, &sac);
         let tier = if reporter == asset.issuer {
             Tier::IssuerSigned
@@ -557,6 +590,9 @@ impl CoverageLedger {
     /// True when both the supply snapshot and the chosen report are at most
     /// `max_age` seconds old and coverage is at least `min_bps`.
     pub fn is_covered(env: Env, sac: Address, min_bps: u32, max_age: u64, min_tier: Tier) -> bool {
+        if paused_flag(&env) {
+            panic_with_error!(&env, LedgerError::Paused);
+        }
         let coverage = match Self::coverage(env.clone(), sac, min_tier) {
             Some(c) => c,
             None => return false,
@@ -564,6 +600,29 @@ impl CoverageLedger {
         let now = env.ledger().timestamp();
         let fresh = |t: u64| now.saturating_sub(t) <= max_age;
         fresh(coverage.supply_timestamp) && fresh(coverage.report_as_of) && coverage.bps >= min_bps
+    }
+
+    /// Stop recording figures and answering `is_covered` during an incident.
+    /// Idempotent, and the event names the admin that asserted the state.
+    pub fn pause(env: Env) {
+        let by = admin(&env);
+        by.require_auth();
+        env.storage().instance().set(&DataKey::Paused, &true);
+        bump_instance(&env);
+        Paused { by }.publish(&env);
+    }
+
+    /// Clear the incident switch.
+    pub fn unpause(env: Env) {
+        let by = admin(&env);
+        by.require_auth();
+        env.storage().instance().set(&DataKey::Paused, &false);
+        bump_instance(&env);
+        Unpaused { by }.publish(&env);
+    }
+
+    pub fn is_paused(env: Env) -> bool {
+        paused_flag(&env)
     }
 
     pub fn transfer_admin(env: Env, new_admin: Address) {

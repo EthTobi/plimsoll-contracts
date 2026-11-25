@@ -1680,3 +1680,128 @@ fn a_new_proposal_restarts_the_clock() {
         Err(Ok(LedgerError::UpgradeDelayNotElapsed.into()))
     );
 }
+
+// ---- emergency pause (#77) ------------------------------------------------
+
+#[test]
+fn pause_sets_the_flag_and_emits_the_admin() {
+    let f = listed();
+    assert!(!f.ledger.is_paused());
+
+    f.ledger.pause();
+
+    let (topics, data) = last_ledger_event(&f);
+    assert!(f.ledger.is_paused());
+    assert_eq!(
+        Symbol::try_from_val(&f.env, &topics.get(0).unwrap()).unwrap(),
+        Symbol::new(&f.env, "paused")
+    );
+    assert_eq!(
+        Address::try_from_val(&f.env, &data.get(Symbol::new(&f.env, "by")).unwrap()).unwrap(),
+        f.admin
+    );
+}
+
+#[test]
+fn unpause_clears_the_flag_and_emits_the_admin() {
+    let f = listed();
+    f.ledger.pause();
+
+    f.ledger.unpause();
+
+    let (topics, data) = last_ledger_event(&f);
+    assert!(!f.ledger.is_paused());
+    assert_eq!(
+        Symbol::try_from_val(&f.env, &topics.get(0).unwrap()).unwrap(),
+        Symbol::new(&f.env, "unpaused")
+    );
+    assert_eq!(
+        Address::try_from_val(&f.env, &data.get(Symbol::new(&f.env, "by")).unwrap()).unwrap(),
+        f.admin
+    );
+}
+
+#[test]
+fn pause_is_idempotent() {
+    let f = listed();
+    f.ledger.pause();
+    f.ledger.pause();
+    assert!(f.ledger.is_paused());
+}
+
+#[test]
+fn pause_requires_the_admin() {
+    let f = listed();
+    let stranger = Address::generate(&f.env);
+    authorise_only(&f, &[(&stranger, "pause", ().into_val(&f.env))]);
+    assert_eq!(f.ledger.try_pause(), Err(Ok(auth_failure())));
+}
+
+#[test]
+fn unpause_requires_the_admin() {
+    let f = listed();
+    f.ledger.pause();
+    let stranger = Address::generate(&f.env);
+    authorise_only(&f, &[(&stranger, "unpause", ().into_val(&f.env))]);
+    assert_eq!(f.ledger.try_unpause(), Err(Ok(auth_failure())));
+}
+
+#[test]
+fn a_paused_ledger_records_neither_supply_nor_reserves() {
+    let f = listed();
+    f.ledger.pause();
+
+    assert_eq!(
+        f.ledger
+            .try_post_supply(&f.poster, &f.sac, &UNIT, &990, &hash(&f.env, 1)),
+        Err(Ok(LedgerError::Paused.into()))
+    );
+    assert_eq!(
+        f.ledger.try_post_reserve(
+            &f.issuer,
+            &f.sac,
+            &UNIT,
+            &T0,
+            &hash(&f.env, 2),
+            &uri(&f.env)
+        ),
+        Err(Ok(LedgerError::Paused.into()))
+    );
+    assert_eq!(f.ledger.get_supply(&f.sac), None);
+}
+
+#[test]
+fn a_paused_ledger_refuses_is_covered_but_still_answers_coverage() {
+    let f = listed();
+    supply(&f, 100 * UNIT);
+    post(&f, &f.issuer, 100 * UNIT, T0);
+    assert!(f
+        .ledger
+        .is_covered(&f.sac, &10_000, &86_400, &Tier::Transcribed));
+
+    f.ledger.pause();
+
+    assert_eq!(
+        f.ledger
+            .try_is_covered(&f.sac, &10_000, &86_400, &Tier::Transcribed),
+        Err(Ok(LedgerError::Paused.into()))
+    );
+    // Views keep working so a dashboard can still show the recorded state.
+    assert_eq!(
+        f.ledger.coverage(&f.sac, &Tier::Transcribed).unwrap().bps,
+        10_000
+    );
+}
+
+#[test]
+fn unpausing_restores_posting_and_is_covered() {
+    let f = listed();
+    f.ledger.pause();
+    f.ledger.unpause();
+
+    supply(&f, 100 * UNIT);
+    post(&f, &f.issuer, 100 * UNIT, T0);
+    assert!(f
+        .ledger
+        .is_covered(&f.sac, &10_000, &86_400, &Tier::Transcribed));
+}
