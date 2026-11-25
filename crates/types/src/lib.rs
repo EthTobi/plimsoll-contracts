@@ -219,6 +219,13 @@ pub trait RegistryInterface {
     fn role_of(env: Env, reporter: Address) -> Option<Role>;
 }
 
+/// The subset of a SEP-41 token that coverage-ledger calls when an asset opts
+/// in to a native supply source.
+#[contractclient(name = "SupplyTokenClient")]
+pub trait SupplyTokenInterface {
+    fn total_supply(env: Env) -> i128;
+}
+
 /// The subset of coverage-ledger that consumers call.
 #[contractclient(name = "CoverageLedgerClient")]
 pub trait CoverageLedgerInterface {

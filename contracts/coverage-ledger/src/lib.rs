@@ -5,9 +5,9 @@
 
 use plimsoll_types::{
     coverage_bps, AssetRecord, Coverage, CoverageStatus, CoveredInfo, PendingUpgrade,
-    RegistryClient, ReserveReport, Role, StaleInfo, SupplySnapshot, Tier, INSTANCE_EXTEND_TO,
-    INSTANCE_THRESHOLD, MAX_PLAUSIBLE_BPS, MIN_PLAUSIBLE_BPS, PERSISTENT_EXTEND_TO,
-    PERSISTENT_THRESHOLD, SECONDS_PER_LEDGER, UPGRADE_DELAY_LEDGERS,
+    RegistryClient, ReserveReport, Role, StaleInfo, SupplySnapshot, SupplyTokenClient, Tier,
+    INSTANCE_EXTEND_TO, INSTANCE_THRESHOLD, MAX_PLAUSIBLE_BPS, MIN_PLAUSIBLE_BPS,
+    PERSISTENT_EXTEND_TO, PERSISTENT_THRESHOLD, SECONDS_PER_LEDGER, UPGRADE_DELAY_LEDGERS,
 };
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, token,
@@ -40,6 +40,8 @@ enum DataKey {
     Reporters(Address, Tier),
     /// Incident switch. Absent means not paused.
     Paused,
+    /// The SEP-41 token whose `total_supply()` replaces the posted snapshot.
+    NativeSupply(Address),
 }
 
 #[contracterror]
@@ -103,6 +105,14 @@ pub struct ReservePosted {
 pub struct AdminTransferred {
     #[topic]
     pub new_admin: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeSupplyEnabled {
+    #[topic]
+    pub sac: Address,
+    pub token: Address,
 }
 
 #[contractevent]
@@ -277,6 +287,47 @@ fn migrate_legacy(env: &Env, sac: &Address, tier: Tier) {
         );
         env.storage().persistent().remove(&legacy_key);
     }
+}
+
+/// The supply figure coverage is judged against, from either the native source
+/// or the posted snapshot.
+struct SupplyFigure {
+    amount: i128,
+    ledger: u32,
+    timestamp: u64,
+}
+
+/// The token opted in to as this asset's native supply source, if any.
+fn native_token(env: &Env, sac: &Address) -> Option<Address> {
+    read_persistent(env, &DataKey::NativeSupply(sac.clone()))
+}
+
+/// The native figure, or `None` when the opt-in is absent or the call fails.
+/// A failure is not an error: callers fall back to the posted snapshot.
+fn native_supply(env: &Env, sac: &Address) -> Option<SupplyFigure> {
+    let token = native_token(env, sac)?;
+    match SupplyTokenClient::new(env, &token).try_total_supply() {
+        Ok(Ok(amount)) if amount >= 0 => Some(SupplyFigure {
+            amount,
+            ledger: env.ledger().sequence(),
+            timestamp: env.ledger().timestamp(),
+        }),
+        _ => None,
+    }
+}
+
+/// Native supply when opted in and answering, otherwise the latest snapshot.
+fn effective_supply(env: &Env, sac: &Address) -> Option<SupplyFigure> {
+    if let Some(native) = native_supply(env, sac) {
+        return Some(native);
+    }
+    read_persistent::<SupplySnapshot>(env, &DataKey::Supply(sac.clone())).map(|snapshot| {
+        SupplyFigure {
+            amount: snapshot.amount,
+            ledger: snapshot.ledger,
+            timestamp: snapshot.timestamp,
+        }
+    })
 }
 
 /// Whether a stored report still counts: its reporter must still be entitled
@@ -575,7 +626,7 @@ impl CoverageLedger {
 
     /// Latest supply against the freshest report at `min_tier` or stronger.
     pub fn coverage(env: Env, sac: Address, min_tier: Tier) -> Option<Coverage> {
-        let supply = read_persistent::<SupplySnapshot>(&env, &DataKey::Supply(sac.clone()))?;
+        let supply = effective_supply(&env, &sac)?;
         let report = best_report(&env, &sac, min_tier)?;
         Some(Coverage {
             bps: coverage_bps(report.amount, supply.amount),
@@ -652,6 +703,21 @@ impl CoverageLedger {
 
     pub fn is_paused(env: Env) -> bool {
         paused_flag(&env)
+    }
+
+    /// Opt `sac` in to reading supply from `token.total_supply()` instead of
+    /// the posted snapshot. The snapshot is kept as the fallback.
+    pub fn enable_native_supply(env: Env, sac: Address, token: Address) {
+        admin(&env).require_auth();
+        require_listed(&env, &sac);
+        write_persistent(&env, &DataKey::NativeSupply(sac.clone()), &token);
+        bump_instance(&env);
+        NativeSupplyEnabled { sac, token }.publish(&env);
+    }
+
+    /// The opted-in token, or `None` when the asset reads the snapshot.
+    pub fn native_supply_token(env: Env, sac: Address) -> Option<Address> {
+        native_token(&env, &sac)
     }
 
     pub fn transfer_admin(env: Env, new_admin: Address) {

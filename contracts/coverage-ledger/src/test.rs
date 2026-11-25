@@ -1950,3 +1950,141 @@ fn coverage_status_uses_min_tier_and_bps_like_is_covered() {
         );
     }
 }
+
+// ---- native supply source (#99) -------------------------------------------
+
+/// A minimal SEP-41 supply source: the test host's Stellar Asset Contract
+/// does not expose `total_supply`, but a Soroban token can.
+#[contract]
+pub struct TestSupplyToken;
+
+#[contractimpl]
+impl TestSupplyToken {
+    pub fn __constructor(env: Env, supply: i128) {
+        env.storage().instance().set(&0u32, &supply);
+    }
+
+    pub fn total_supply(env: Env) -> i128 {
+        env.storage().instance().get(&0u32).unwrap_or(0)
+    }
+}
+
+fn native_token(f: &Fixture, supply: i128) -> Address {
+    f.env.register(TestSupplyToken, (supply,))
+}
+
+#[test]
+fn enable_native_supply_stores_the_token_and_emits() {
+    let f = listed();
+    assert_eq!(f.ledger.native_supply_token(&f.sac), None);
+
+    f.ledger.enable_native_supply(&f.sac, &f.sac);
+
+    let (topics, data) = last_ledger_event(&f);
+    assert_eq!(
+        Symbol::try_from_val(&f.env, &topics.get(0).unwrap()).unwrap(),
+        Symbol::new(&f.env, "native_supply_enabled")
+    );
+    assert_eq!(
+        Address::try_from_val(&f.env, &topics.get(1).unwrap()).unwrap(),
+        f.sac
+    );
+    assert_eq!(
+        Address::try_from_val(&f.env, &data.get(Symbol::new(&f.env, "token")).unwrap()).unwrap(),
+        f.sac
+    );
+    assert_eq!(f.ledger.native_supply_token(&f.sac), Some(f.sac));
+}
+
+#[test]
+fn enable_native_supply_requires_a_listed_asset() {
+    let f = setup();
+    assert_eq!(
+        f.ledger.try_enable_native_supply(&f.sac, &f.sac),
+        Err(Ok(LedgerError::AssetNotListed.into()))
+    );
+}
+
+#[test]
+fn enable_native_supply_requires_the_admin() {
+    let f = listed();
+    let stranger = Address::generate(&f.env);
+    authorise_only(
+        &f,
+        &[(
+            &stranger,
+            "enable_native_supply",
+            (f.sac.clone(), f.sac.clone()).into_val(&f.env),
+        )],
+    );
+    assert_eq!(
+        f.ledger.try_enable_native_supply(&f.sac, &f.sac),
+        Err(Ok(auth_failure()))
+    );
+}
+
+#[test]
+fn coverage_prefers_the_native_supply_over_the_snapshot() {
+    let f = covered();
+    let token = native_token(&f, 50 * UNIT);
+    f.ledger.enable_native_supply(&f.sac, &token);
+
+    let c = f.ledger.coverage(&f.sac, &Tier::Transcribed).unwrap();
+    assert_eq!(c.supply, 50 * UNIT);
+    assert_eq!(c.bps, 20_000);
+    // The snapshot is still readable and is the fallback.
+    assert_eq!(f.ledger.get_supply(&f.sac).unwrap().amount, 100 * UNIT);
+    assert_eq!(
+        f.ledger
+            .coverage_status(&f.sac, &20_000, &86_400, &Tier::Transcribed),
+        CoverageStatus::Covered(CoveredInfo { bps: 20_000 })
+    );
+}
+
+#[test]
+fn native_supply_is_always_as_fresh_as_the_current_ledger() {
+    let f = covered();
+    let day = 86_400;
+    let later = T0 + 10 * day;
+    f.env.ledger().set_timestamp(later);
+    post(&f, &f.issuer, 100 * UNIT, later);
+
+    // The snapshot timestamp is T0, so it is stale for a one-day window...
+    assert!(!f
+        .ledger
+        .is_covered(&f.sac, &10_000, &day, &Tier::Transcribed));
+
+    // ...but the native figure is stamped at the current ledger.
+    let token = native_token(&f, 100 * UNIT);
+    f.ledger.enable_native_supply(&f.sac, &token);
+    assert!(f
+        .ledger
+        .is_covered(&f.sac, &10_000, &day, &Tier::Transcribed));
+}
+
+#[test]
+fn a_failing_native_query_falls_back_to_the_snapshot() {
+    let f = covered();
+    // The registry has no sep41 total_supply entry point.
+    f.ledger.enable_native_supply(&f.sac, &f.registry.address);
+
+    let c = f.ledger.coverage(&f.sac, &Tier::Transcribed).unwrap();
+    assert_eq!(c.supply, 100 * UNIT);
+    assert_eq!(c.bps, 10_000);
+    assert!(f
+        .ledger
+        .is_covered(&f.sac, &10_000, &86_400, &Tier::Transcribed));
+}
+
+#[test]
+fn a_failing_native_query_without_a_snapshot_is_uncovered() {
+    let f = listed();
+    f.ledger.enable_native_supply(&f.sac, &f.registry.address);
+
+    assert_eq!(f.ledger.coverage(&f.sac, &Tier::Transcribed), None);
+    assert_eq!(
+        f.ledger
+            .coverage_status(&f.sac, &0, &u64::MAX, &Tier::Transcribed),
+        CoverageStatus::Uncovered
+    );
+}
