@@ -224,6 +224,7 @@ Records what was said, and answers coverage questions.
 | `Reporters(Address, Tier)` | persistent | `Vec<Address>`: the reporters with a `ReportBy` entry at that tier, in the order they first posted; at most `MAX_REPORTERS_PER_TIER = 4` |
 | `Assets` | persistent | `Vec<Address>`: every listed asset, in listing order. The `asset_reporter_pairs` index |
 | `Report(Address, Tier)` | persistent | `ReserveReport`: the v0.1 layout (one per tier). Read until migrated, never written; see [Upgrading a v0.1 deployment](#upgrading-a-v01-deployment) |
+| `Alias(Address)` | persistent | `Address`: maps a deprecated asset SAC to its successor SAC |
 
 Every reporter keeps their own figure. Two auditors' reports coexist, and a
 transcriber who posts a later `as_of` adds a fresher figure without erasing
@@ -273,6 +274,8 @@ data layouts, with real testnet examples, are in [EVENTS.md](EVENTS.md).
 | `asset_reporter_pairs(cursor: Option<u32>, limit: u32)` | — | `Vec<(Address, Address)>` (up to `MAX_PAIRS_PER_CALL = 50` (asset, reporter) pairs) | — | — |
 | `coverage(sac, min_tier: Tier)` | — | `Option<Coverage>` | — | — |
 | `is_covered(sac, min_bps: u32, max_age: u64, min_tier: Tier)` | — | `bool` | — | — |
+| `alias_asset(old: Address, new: Address)` | admin | `()` | `AssetNotListed` (either SAC unlisted), `SelfAlias` | `asset_aliased {old, new}` |
+| `get_alias(asset: Address)` | — | `Option<Address>` | — | — |
 | `registry()` / `admin()` | — | `Address` | — | — |
 | `transfer_admin(new_admin)` | admin and new_admin | `()` | — | `admin_transferred` |
 | `propose_upgrade(wasm_hash: BytesN<32>)` | admin | `()` | — | `upgrade_proposed {wasm_hash} executable_at_ledger` |
@@ -321,35 +324,28 @@ Rules:
   `None` if there is no supply snapshot or no qualifying report.
 - `is_covered` is true only if `coverage` is `Some`, both the supply snapshot
   and the report are no older than `max_age` seconds, and `bps >= min_bps`.
-- `reporter_last_post(reporter, asset)` answers with the `posted_at` of the
-  reporter's most recent post for the asset, across every tier, including a
-  not-yet-migrated v0.1 entry from that reporter. It is the time of the post,
-  not the figure's `as_of`. The registry is not consulted, so a revoked
-  reporter still answers, and `get_reports` is what says which of their
-  figures still count. `None` means the reporter has never posted for that
-  asset.
-- `asset_reporter_pairs(cursor, limit)` lists the (asset, reporter) pairs the
-  stored indexes hold, for an indexer bootstrapping its dataset. Assets come
-  in listing order, and within an asset the tiers strongest first
-  (`AuditorSigned`, `IssuerSigned`, `Transcribed`), first-post order within a
-  tier; a reporter with entries at more than one tier appears once. Pairs come
-  from the indexes alone, so a reporter whose figure no longer counts still
-  appears. `cursor` is the index of the first pair to return and defaults to
-  `0`, `limit` is capped at `MAX_PAIRS_PER_CALL = 50`, and an empty page means
-  the cursor is at or past the last pair. The cost of a page grows with its
-  cursor, because the assets before it are walked to count their pairs.
-- `list_asset` appends the asset to the `Assets` index. The index starts empty
-  in this version, so an asset listed by earlier code is absent from
-  `asset_reporter_pairs` until it is listed again — which `AlreadyListed`
-  prevents — while `get_asset`, `get_supply`, `get_reports` and `coverage`
-  keep answering for it. Its `asset_listed` event remains the record that it
-  was listed.
+  The comparison is **inclusive**: a coverage ratio exactly equal to `min_bps`
+  returns `true`. This matters at exact round numbers such as `min_bps = 10_000`
+  (100 %): an asset with reserves equal to its circulating supply passes the
+  gate.
+
+- `alias_asset(old, new)` creates or replaces the alias mapping `old → new`.
+  Both `old` and `new` must be listed assets; `old == new` is rejected with
+  `SelfAlias`. Only one alias hop is ever followed: `is_covered(old, ...)` and
+  `coverage(old, ...)` resolve to `new`, but if `new` itself has an alias it is
+  ignored (no chaining). The admin may call `alias_asset` a second time with the
+  same `old` to point it at a different successor, or to `old` itself (which
+  would be rejected with `SelfAlias`; to remove an alias, use a new listing for
+  `old`).
+- `get_alias(asset)` returns the successor address if one has been registered,
+  or `None`.
 
 Errors (`LedgerError`): `NotAStellarAsset = 1`, `AlreadyListed = 2`,
 `AssetNotListed = 3`, `NotSupplyPoster = 4`, `NotReporter = 5`,
 `InvalidAmount = 6`, `FutureLedger = 7`, `StaleLedger = 8`,
 `FutureTimestamp = 9`, `StaleReport = 10`, `InvalidUri = 11`,
-`ImplausibleAmount = 12`, `TooManyReporters = 13`.
+`ImplausibleAmount = 12`, `TooManyReporters = 13`, `UpgradeNotProposed = 14`,
+`UpgradeDelayNotElapsed = 15`, `SelfAlias = 16`.
 Causes, remedies and the order they are checked in: [ERRORS.md](ERRORS.md#ledgererror).
 
 ### Upgrading a v0.1 deployment
