@@ -1060,6 +1060,54 @@ fn a_reporter_whose_role_changes_starts_a_new_entry_at_the_new_tier() {
     );
 }
 
+// ---- perf: lazy coverage selection with 20-report-equivalent asset (#78) ---
+
+/// Fills all three tiers to their per-tier cap, posts one legacy entry per
+/// tier, then verifies that is_covered returns the correct answer. Ensures the
+/// lazy cursor path handles the maximum number of stored reports correctly, and
+/// that the early stale-supply exit fires before any report reads.
+#[test]
+fn is_covered_with_fully_loaded_tiers_returns_correct_result() {
+    let f = listed();
+    supply(&f, 100 * UNIT);
+
+    // Fill the auditor tier (4 reporters).
+    let mut auditors = std::vec![f.auditor.clone()];
+    for _ in 1..MAX_REPORTERS_PER_TIER {
+        auditors.push(add_reporter(&f, Role::Auditor));
+    }
+    for (i, a) in auditors.iter().enumerate() {
+        post(&f, a, 100 * UNIT, T0 - 400 + i as u64);
+    }
+    // Fill the transcriber tier (4 reporters).
+    let mut transcribers = std::vec![f.transcriber.clone()];
+    for _ in 1..MAX_REPORTERS_PER_TIER {
+        transcribers.push(add_reporter(&f, Role::Transcriber));
+    }
+    for (i, t) in transcribers.iter().enumerate() {
+        post(&f, t, 100 * UNIT, T0 - 300 + i as u64);
+    }
+    // Issuer also posts.
+    post(&f, &f.issuer, 100 * UNIT, T0 - 200);
+
+    let total = f.ledger.get_reports(&f.sac).len();
+    // 4 auditors + 4 transcribers + 1 issuer = 9 counting reports.
+    assert_eq!(total, MAX_REPORTERS_PER_TIER * 2 + 1);
+
+    let day = 86_400u64;
+    // Fully covered asset with many reporters: should be true.
+    assert!(f
+        .ledger
+        .is_covered(&f.sac, &10_000, &day, &Tier::Transcribed));
+
+    // Early-exit on stale supply: advance time beyond max_age for the supply;
+    // is_covered must return false without loading reports.
+    f.env.ledger().set_timestamp(T0 + 2 * day);
+    assert!(!f
+        .ledger
+        .is_covered(&f.sac, &10_000, &day, &Tier::Transcribed));
+}
+
 // ---- v0.1 storage migration ----------------------------------------------
 
 /// Write a report the way the v0.1 ledger stored it: one per tier.

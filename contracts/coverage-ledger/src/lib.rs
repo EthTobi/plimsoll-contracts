@@ -260,25 +260,47 @@ fn counts(registry: &RegistryClient, report: &ReserveReport) -> bool {
     registry.role_of(&report.reporter) == Some(needed)
 }
 
-/// The freshest report in `candidates` that still counts. Candidates come in
-/// priority order (strongest tier first, then first-post order), so on equal
-/// `as_of` the earlier one wins. The registry is asked only about the report
-/// that would win, and again only if that one no longer counts, so a fresh
-/// issuer-signed report costs no cross-contract call at all.
-fn pick_counting(env: &Env, mut candidates: Vec<ReserveReport>) -> Option<ReserveReport> {
+/// The freshest counting report in `candidates`.
+///
+/// Two-phase per iteration: (1) a single O(n) index scan that finds the
+/// globally freshest non-rejected candidate without touching the registry,
+/// then (2) one `counts` call. If that report is revoked the index is marked
+/// and the loop repeats. This avoids Vec::remove (O(n) element shift) and
+/// keeps registry calls at most equal to the number of revoked reporters.
+/// A bitmask tracks rejected positions; `candidates` is never mutated.
+/// We have at most 3 tiers × (1 legacy + MAX_REPORTERS_PER_TIER) = 15
+/// entries, so a u32 bitmask is always sufficient.
+fn pick_counting(env: &Env, candidates: Vec<ReserveReport>) -> Option<ReserveReport> {
     let registry = RegistryClient::new(env, &registry(env));
+    let n = candidates.len();
+    let mut skip: u32 = 0;
     loop {
-        let mut best: Option<(u32, ReserveReport)> = None;
-        for (i, report) in candidates.iter().enumerate() {
-            if best.as_ref().is_none_or(|(_, b)| report.as_of > b.as_of) {
-                best = Some((i as u32, report));
+        // Phase 1: find the freshest non-skipped candidate (no registry call).
+        let mut best_i: Option<u32> = None;
+        for i in 0..n {
+            if skip & (1u32 << i) != 0 {
+                continue;
             }
+            let r = candidates.get(i).unwrap();
+            best_i = Some(match best_i {
+                None => i,
+                Some(bi) => {
+                    let b = candidates.get(bi).unwrap();
+                    if r.as_of > b.as_of || (r.as_of == b.as_of && r.tier > b.tier) {
+                        i
+                    } else {
+                        bi
+                    }
+                }
+            });
         }
-        let (i, report) = best?;
+        // Phase 2: check only the winner.
+        let i = best_i?;
+        let report = candidates.get(i).unwrap();
         if counts(&registry, &report) {
             return Some(report);
         }
-        candidates.remove(i);
+        skip |= 1u32 << i;
     }
 }
 
@@ -555,15 +577,29 @@ impl CoverageLedger {
     }
 
     /// True when both the supply snapshot and the chosen report are at most
-    /// `max_age` seconds old and coverage is at least `min_bps`.
+    /// `max_age` seconds old and coverage is at least `min_bps` (inclusive).
+    ///
+    /// Performance note: the supply snapshot is loaded first. When it is
+    /// absent or already older than `max_age` the function returns false
+    /// immediately, before reading any reserve reports. This is the common
+    /// early-exit path: a stale supply avoids all subsequent storage reads.
     pub fn is_covered(env: Env, sac: Address, min_bps: u32, max_age: u64, min_tier: Tier) -> bool {
-        let coverage = match Self::coverage(env.clone(), sac, min_tier) {
-            Some(c) => c,
+        // Load supply first; bail before any report reads when absent or stale.
+        let supply = match read_persistent::<SupplySnapshot>(&env, &DataKey::Supply(sac.clone())) {
+            Some(s) => s,
             None => return false,
         };
         let now = env.ledger().timestamp();
-        let fresh = |t: u64| now.saturating_sub(t) <= max_age;
-        fresh(coverage.supply_timestamp) && fresh(coverage.report_as_of) && coverage.bps >= min_bps
+        if now.saturating_sub(supply.timestamp) > max_age {
+            return false;
+        }
+        // Find the freshest counting report across all tiers >= min_tier.
+        let report = match best_report(&env, &sac, min_tier) {
+            Some(r) => r,
+            None => return false,
+        };
+        now.saturating_sub(report.as_of) <= max_age
+            && coverage_bps(report.amount, supply.amount) >= min_bps
     }
 
     pub fn transfer_admin(env: Env, new_admin: Address) {
