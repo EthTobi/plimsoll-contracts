@@ -859,6 +859,123 @@ fn zero_supply_counts_as_covered() {
     assert_eq!(c.bps, u32::MAX);
 }
 
+// ---- asset aliasing (#80) -------------------------------------------------
+
+fn second_sac(f: &Fixture) -> Address {
+    let handle = f
+        .env
+        .register_stellar_asset_contract_v2(Address::generate(&f.env));
+    let sac = handle.address();
+    f.ledger.list_asset(&sac);
+    sac
+}
+
+#[test]
+fn alias_asset_redirects_coverage_queries() {
+    let f = listed();
+    let new_sac = second_sac(&f);
+    supply(&f, 100 * UNIT);
+
+    // Post supply and reserve for the new asset (use auditor; f.issuer is new_sac's issuer only
+    // when the SAC admin happens to match, but here we use the registered auditor to be safe).
+    f.ledger
+        .post_supply(&f.poster, &new_sac, &(100 * UNIT), &990, &hash(&f.env, 10));
+    f.ledger.post_reserve(
+        &f.auditor,
+        &new_sac,
+        &(100 * UNIT),
+        &T0,
+        &hash(&f.env, 11),
+        &uri(&f.env),
+    );
+
+    // Before aliasing, old SAC has no data.
+    assert_eq!(f.ledger.coverage(&f.sac, &Tier::Transcribed), None);
+
+    f.ledger.alias_asset(&f.sac, &new_sac);
+    assert_eq!(f.ledger.get_alias(&f.sac), Some(new_sac.clone()));
+
+    // After aliasing, coverage and is_covered transparently use new_sac.
+    let c = f.ledger.coverage(&f.sac, &Tier::Transcribed).unwrap();
+    assert_eq!(c.bps, 10_000);
+    assert!(f
+        .ledger
+        .is_covered(&f.sac, &10_000, &86_400, &Tier::Transcribed));
+}
+
+#[test]
+fn alias_asset_requires_both_assets_listed() {
+    let f = listed();
+    let unlisted = f
+        .env
+        .register_stellar_asset_contract_v2(Address::generate(&f.env))
+        .address();
+    let res = f.ledger.try_alias_asset(&f.sac, &unlisted);
+    assert_eq!(res, Err(Ok(LedgerError::AssetNotListed.into())));
+}
+
+#[test]
+fn alias_asset_rejects_self_alias() {
+    let f = listed();
+    let res = f.ledger.try_alias_asset(&f.sac, &f.sac);
+    assert_eq!(res, Err(Ok(LedgerError::SelfAlias.into())));
+}
+
+#[test]
+fn alias_asset_requires_admin_auth() {
+    let f = listed();
+    let new_sac = second_sac(&f);
+    let non_admin = Address::generate(&f.env);
+    authorise_only(
+        &f,
+        &[(
+            &non_admin,
+            "alias_asset",
+            (f.sac.clone(), new_sac.clone()).into_val(&f.env),
+        )],
+    );
+    assert_eq!(
+        f.ledger.try_alias_asset(&f.sac, &new_sac),
+        Err(Ok(auth_failure()))
+    );
+}
+
+#[test]
+fn alias_follows_at_most_one_hop() {
+    let f = listed();
+    let mid = second_sac(&f);
+    let handle = f
+        .env
+        .register_stellar_asset_contract_v2(Address::generate(&f.env));
+    let end = handle.address();
+    f.ledger.list_asset(&end);
+
+    // Supply + reserve only on `end` (use auditor since we don't have end's issuer).
+    f.ledger
+        .post_supply(&f.poster, &end, &(100 * UNIT), &990, &hash(&f.env, 20));
+    f.ledger.post_reserve(
+        &f.auditor,
+        &end,
+        &(100 * UNIT),
+        &T0,
+        &hash(&f.env, 21),
+        &uri(&f.env),
+    );
+
+    // Chain: sac → mid → end (but only one hop is followed).
+    f.ledger.alias_asset(&f.sac, &mid);
+    f.ledger.alias_asset(&mid, &end);
+
+    // is_covered(sac) follows sac→mid but NOT mid→end, so it sees no data.
+    assert!(!f
+        .ledger
+        .is_covered(&f.sac, &10_000, &86_400, &Tier::Transcribed));
+    // is_covered(mid) follows mid→end and correctly sees the data.
+    assert!(f
+        .ledger
+        .is_covered(&mid, &10_000, &86_400, &Tier::Transcribed));
+}
+
 // ---- one report per reporter (#26) ---------------------------------------
 
 fn add_reporter(f: &Fixture, role: Role) -> Address {

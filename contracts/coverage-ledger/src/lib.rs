@@ -37,6 +37,8 @@ enum DataKey {
     ReportBy(Address, Tier, Address),
     /// Reporters with a `ReportBy` entry at (sac, tier), in first-post order.
     Reporters(Address, Tier),
+    /// Maps a deprecated asset SAC to its successor SAC (at most one hop).
+    Alias(Address),
 }
 
 #[contracterror]
@@ -58,6 +60,7 @@ pub enum LedgerError {
     TooManyReporters = 13,
     UpgradeNotProposed = 14,
     UpgradeDelayNotElapsed = 15,
+    SelfAlias = 16,
 }
 
 #[contractevent]
@@ -121,6 +124,15 @@ pub struct UpgradeExecuted {
 pub struct UpgradeCancelled {
     #[topic]
     pub wasm_hash: BytesN<32>,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AssetAliased {
+    #[topic]
+    pub old: Address,
+    #[topic]
+    pub new: Address,
 }
 
 #[contract]
@@ -541,6 +553,27 @@ impl CoverageLedger {
         read_persistent(&env, &DataKey::Supply(sac))
     }
 
+    /// Register `new` as the successor of the deprecated asset `old`.
+    /// Both must already be listed. At most one alias hop is ever followed:
+    /// `is_covered(old, ...)` and `coverage(old, ...)` will resolve `old` to
+    /// `new`, but `new`'s own alias (if any) is ignored.
+    pub fn alias_asset(env: Env, old: Address, new: Address) {
+        admin(&env).require_auth();
+        if old == new {
+            panic_with_error!(&env, LedgerError::SelfAlias);
+        }
+        require_listed(&env, &old);
+        require_listed(&env, &new);
+        write_persistent(&env, &DataKey::Alias(old.clone()), &new);
+        bump_instance(&env);
+        AssetAliased { old, new }.publish(&env);
+    }
+
+    /// The registered successor of `asset`, if one exists.
+    pub fn get_alias(env: Env, asset: Address) -> Option<Address> {
+        read_persistent(&env, &DataKey::Alias(asset))
+    }
+
     /// The freshest report at `tier` that still counts.
     pub fn get_report(env: Env, sac: Address, tier: Tier) -> Option<ReserveReport> {
         freshest_at(&env, &sac, tier)
@@ -562,9 +595,13 @@ impl CoverageLedger {
     }
 
     /// Latest supply against the freshest report at `min_tier` or stronger.
+    /// If `sac` has a registered alias its successor is used transparently
+    /// (at most one hop — the successor's own alias, if any, is not followed).
     pub fn coverage(env: Env, sac: Address, min_tier: Tier) -> Option<Coverage> {
-        let supply = read_persistent::<SupplySnapshot>(&env, &DataKey::Supply(sac.clone()))?;
-        let report = best_report(&env, &sac, min_tier)?;
+        let resolved = read_persistent::<Address>(&env, &DataKey::Alias(sac.clone()))
+            .unwrap_or_else(|| sac.clone());
+        let supply = read_persistent::<SupplySnapshot>(&env, &DataKey::Supply(resolved.clone()))?;
+        let report = best_report(&env, &resolved, min_tier)?;
         Some(Coverage {
             bps: coverage_bps(report.amount, supply.amount),
             supply: supply.amount,
@@ -579,13 +616,19 @@ impl CoverageLedger {
     /// True when both the supply snapshot and the chosen report are at most
     /// `max_age` seconds old and coverage is at least `min_bps` (inclusive).
     ///
+    /// If `sac` has a registered alias its successor is used transparently
+    /// (at most one hop). See `alias_asset` and `get_alias`.
+    ///
     /// Performance note: the supply snapshot is loaded first. When it is
     /// absent or already older than `max_age` the function returns false
     /// immediately, before reading any reserve reports. This is the common
     /// early-exit path: a stale supply avoids all subsequent storage reads.
     pub fn is_covered(env: Env, sac: Address, min_bps: u32, max_age: u64, min_tier: Tier) -> bool {
+        // Follow at most one alias hop before loading anything else.
+        let resolved = read_persistent::<Address>(&env, &DataKey::Alias(sac.clone()))
+            .unwrap_or_else(|| sac.clone());
         // Load supply first; bail before any report reads when absent or stale.
-        let supply = match read_persistent::<SupplySnapshot>(&env, &DataKey::Supply(sac.clone())) {
+        let supply = match read_persistent::<SupplySnapshot>(&env, &DataKey::Supply(resolved.clone())) {
             Some(s) => s,
             None => return false,
         };
@@ -594,7 +637,7 @@ impl CoverageLedger {
             return false;
         }
         // Find the freshest counting report across all tiers >= min_tier.
-        let report = match best_report(&env, &sac, min_tier) {
+        let report = match best_report(&env, &resolved, min_tier) {
             Some(r) => r,
             None => return false,
         };
