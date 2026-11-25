@@ -317,6 +317,10 @@ Rules:
   `None` if there is no supply snapshot or no qualifying report.
 - `is_covered` is true only if `coverage` is `Some`, both the supply snapshot
   and the report are no older than `max_age` seconds, and `bps >= min_bps`.
+  The comparison is **inclusive**: a coverage ratio exactly equal to `min_bps`
+  returns `true`. This matters at exact round numbers such as `min_bps = 10_000`
+  (100 %): an asset with reserves equal to its circulating supply passes the
+  gate.
 
 Errors (`LedgerError`): `NotAStellarAsset = 1`, `AlreadyListed = 2`,
 `AssetNotListed = 3`, `NotSupplyPoster = 4`, `NotReporter = 5`,

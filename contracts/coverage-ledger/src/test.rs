@@ -812,6 +812,34 @@ fn is_covered_checks_ratio_age_and_tier() {
         .is_covered(&f.sac, &10_000, &(3 * day), &Tier::Transcribed));
 }
 
+/// is_covered uses `bps >= min_bps` (inclusive boundary).
+/// An asset whose coverage ratio equals min_bps exactly must return true,
+/// and one bps below must return false. See SPEC.md "is_covered" rules.
+#[test]
+fn is_covered_exact_bps_boundary_is_inclusive() {
+    let f = listed();
+    // 100 reserves against 100 supply → exactly 10_000 bps (100 %).
+    f.ledger
+        .post_supply(&f.poster, &f.sac, &(100 * UNIT), &990, &hash(&f.env, 1));
+    f.ledger.post_reserve(
+        &f.issuer,
+        &f.sac,
+        &(100 * UNIT),
+        &T0,
+        &hash(&f.env, 2),
+        &uri(&f.env),
+    );
+    let day = 86_400u64;
+    // Exactly at the boundary → covered.
+    assert!(f
+        .ledger
+        .is_covered(&f.sac, &10_000, &day, &Tier::Transcribed));
+    // One bps above the actual coverage → not covered.
+    assert!(!f
+        .ledger
+        .is_covered(&f.sac, &10_001, &day, &Tier::Transcribed));
+}
+
 #[test]
 fn is_covered_false_for_unlisted() {
     let f = setup();
