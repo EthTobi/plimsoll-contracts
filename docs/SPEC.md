@@ -261,8 +261,9 @@ data layouts, with real testnet examples, are in [EVENTS.md](EVENTS.md).
 | --- | --- | --- | --- | --- |
 | `__constructor(admin: Address, registry: Address)` | — | — | — | — |
 | `list_asset(sac: Address)` | none (permissionless) | `AssetRecord` | `NotAStellarAsset`, `AlreadyListed` | `asset_listed {sac} code, issuer` |
-| `post_supply(poster: Address, sac: Address, amount: i128, ledger: u32, breakdown_hash: BytesN<32>)` | poster | `()` | `NotSupplyPoster`, `AssetNotListed`, `InvalidAmount`, `FutureLedger`, `StaleLedger` | `supply_posted {sac} amount, ledger, breakdown_hash, poster` |
+| `post_supply(poster: Address, sac: Address, amount: i128, ledger: u32, breakdown_hash: BytesN<32>)` | poster | `()` | `NotSupplyPoster`, `AssetNotListed`, `InvalidAmount`, `FutureLedger`, `StaleLedger`, `LedgerTooOld` | `supply_posted {sac} amount, ledger, breakdown_hash, poster` |
 | `post_reserve(reporter: Address, sac: Address, amount: i128, as_of: u64, doc_hash: BytesN<32>, doc_uri: String)` | reporter | `Tier` | `NotReporter`, `AssetNotListed`, `InvalidAmount`, `FutureTimestamp`, `StaleReport`, `InvalidUri`, `ImplausibleAmount`, `TooManyReporters` | `reserve_posted {sac, tier} amount, as_of, reporter, doc_hash, doc_uri` |
+| `retract_reserve(reporter: Address, sac: Address)` | reporter | `()` | `AssetNotListed`, `NotReporter`, `NoReportToRetract` | `reserve_retracted {sac, tier} reporter, as_of` |
 | `get_asset(sac)` | — | `Option<AssetRecord>` | — | — |
 | `get_supply(sac)` | — | `Option<SupplySnapshot>` | — | — |
 | `get_report(sac, tier: Tier)` | — | `Option<ReserveReport>` (the freshest report at that tier that counts) | — | — |
@@ -293,6 +294,17 @@ Rules:
   forward per reporter: `as_of` strictly greater than that reporter's stored
   report at that tier, and not in the future. Another reporter's report at the
   same tier does not make a figure stale.
+- A supply snapshot's `ledger` must be no more than 720 ledgers behind the
+  current ledger. This is approximately one hour at Stellar's usual five
+  seconds per ledger; the sequence-number bound avoids treating a fresh
+  submission time as evidence that an old snapshot is fresh. A snapshot
+  exactly 720 ledgers behind is accepted.
+- `retract_reserve` resolves the reporter's tier exactly as `post_reserve`
+  does, then removes only that reporter's stored report at that tier. If no
+  such report exists, it fails with `NoReportToRetract`. Retraction frees the
+  reporter's slot at that tier, and coverage falls back to the next qualifying
+  report or returns `None`. The `reserve_retracted` event preserves the
+  removed report's identity and `as_of`; history remains off-chain in events.
 - Each tier holds reports from at most `MAX_REPORTERS_PER_TIER = 4` reporters
   per asset. When a reporter with no report at a tier posts to a full tier,
   `post_reserve` first drops the entries whose reporter no longer counts
@@ -322,7 +334,9 @@ Errors (`LedgerError`): `NotAStellarAsset = 1`, `AlreadyListed = 2`,
 `AssetNotListed = 3`, `NotSupplyPoster = 4`, `NotReporter = 5`,
 `InvalidAmount = 6`, `FutureLedger = 7`, `StaleLedger = 8`,
 `FutureTimestamp = 9`, `StaleReport = 10`, `InvalidUri = 11`,
-`ImplausibleAmount = 12`, `TooManyReporters = 13`.
+`ImplausibleAmount = 12`, `TooManyReporters = 13`,
+`UpgradeNotProposed = 14`, `UpgradeDelayNotElapsed = 15`,
+`LedgerTooOld = 16`, `NoReportToRetract = 17`.
 Causes, remedies and the order they are checked in: [ERRORS.md](ERRORS.md#ledgererror).
 
 ### Upgrading a v0.1 deployment
