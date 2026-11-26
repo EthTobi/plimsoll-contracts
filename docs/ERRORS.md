@@ -73,8 +73,8 @@ codes as literal numbers, so a renumbering fails CI.
 
 ## RegistryError
 
-Raised by `reporter-registry`. Both functions that can fail are admin-only,
-so these errors reach maintainers rather than end users.
+Raised by `reporter-registry`. Admin errors reach maintainers; metadata and
+tag errors reach the reporter making the update.
 
 ### 1 `ReporterNotFound`
 
@@ -120,7 +120,8 @@ when several apply the caller sees the first:
 | --- | --- |
 | `list_asset` | `NotAStellarAsset` (not a SAC), `AlreadyListed`, `NotAStellarAsset` (SAC name has no issuer) |
 | `post_supply` | auth, `Paused`, `NotSupplyPoster`, `AssetNotListed`, `InvalidAmount`, `FutureLedger`, `StaleLedger` |
-| `post_reserve` | auth, `Paused`, `AssetNotListed`, `NotReporter`, `InvalidAmount`, `InvalidUri`, `FutureTimestamp`, `ImplausibleAmount`, `StaleReport`, `TooManyReporters` |
+| `post_reserve` | auth, `Paused`, `AssetNotListed`, `NotReporter`, `InvalidAmount`, `InvalidUri`, `FutureTimestamp`, `ImplausibleAmount`, `StaleReport`, `TooManyReporters`, `ReporterScoreOutOfRange` |
+| `retract_report` | auth, `Paused`, `ReportNotFound`, `ReporterScoreOutOfRange` |
 | `enable_native_supply` | auth, `AssetNotListed` |
 
 ### 1 `NotAStellarAsset`

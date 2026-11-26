@@ -287,8 +287,8 @@ data layouts, with real testnet examples, are in [EVENTS.md](EVENTS.md).
 | `__constructor(admin: Address, registry: Address)` | — | — | — | — |
 | `list_asset(sac: Address)` | none (permissionless) | `AssetRecord` | `NotAStellarAsset`, `AlreadyListed` | `asset_listed {sac} code, issuer` |
 | `post_supply(poster: Address, sac: Address, amount: i128, ledger: u32, breakdown_hash: BytesN<32>)` | poster | `()` | `NotSupplyPoster`, `AssetNotListed`, `InvalidAmount`, `FutureLedger`, `StaleLedger` | `supply_posted {sac} amount, ledger, breakdown_hash, poster` |
-| `post_reserve(reporter: Address, sac: Address, amount: i128, as_of: u64, doc_hash: BytesN<32>, doc_uri: String)` | reporter | `Tier` | `NotReporter`, `AssetNotListed`, `InvalidAmount`, `FutureTimestamp`, `StaleReport`, `InvalidUri`, `ImplausibleAmount`, `TooManyReporters` | `reserve_posted {sac, tier} amount, as_of, reporter, doc_hash, doc_uri` |
-| `retract_report(reporter: Address, sac: Address, tier: Tier)` | reporter | `()` | `ReportNotFound` | `reserve_report_retracted {sac, tier} reporter` |
+| `post_reserve(reporter: Address, sac: Address, amount: i128, as_of: u64, doc_hash: BytesN<32>, doc_uri: String)` | reporter | `Tier` | `NotReporter`, `AssetNotListed`, `InvalidAmount`, `FutureTimestamp`, `StaleReport`, `InvalidUri`, `ImplausibleAmount`, `TooManyReporters`, `ReporterScoreOutOfRange` | `reserve_posted {sac, tier} amount, as_of, reporter, doc_hash, doc_uri` |
+| `retract_report(reporter: Address, sac: Address, tier: Tier)` | reporter | `()` | `ReportNotFound`, `ReporterScoreOutOfRange` | `reserve_report_retracted {sac, tier} reporter` |
 | `get_reporter_score(reporter: Address)` | — | `i32` | — | — |
 | `get_asset(sac)` | — | `Option<AssetRecord>` | — | — |
 | `get_supply(sac)` | — | `Option<SupplySnapshot>` | — | — |
