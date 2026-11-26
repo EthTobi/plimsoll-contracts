@@ -236,6 +236,39 @@ distinct contracts, so filter on `contract_id` as well as the topic.
 Same layouts as the coverage ledger's upgrade events, above. The two contracts
 emit them independently, so filter on `contract_id` as well as the topic.
 
+## Additional event layouts
+
+### `reserve_report_retracted`
+
+| | Name | Type |
+| --- | --- | --- |
+| topic 0 | `reserve_report_retracted` | `Symbol` |
+| topic 1 | `sac` | `Address` (contract) |
+| topic 2 | `tier` | `Tier` (`u32`) |
+| data | `reporter` | `Address` (account) |
+
+Raised after the reporter's latest report at that asset and tier is removed.
+
+### `reporter_uri_updated`
+
+| | Name | Type |
+| --- | --- | --- |
+| topic 0 | `reporter_uri_updated` | `Symbol` |
+| topic 1 | `reporter` | `Address` (account) |
+| data | `uri` | `String` (1 to 256 bytes) |
+
+Raised when a registered reporter changes their metadata URI.
+
+### `reporter_tags_updated`
+
+| | Name | Type |
+| --- | --- | --- |
+| topic 0 | `reporter_tags_updated` | `Symbol` |
+| topic 1 | `reporter` | `Address` (account) |
+| data | `tags` | `Vec<Symbol>` (at most five unique tags) |
+
+Raised when a reporter replaces their category tags.
+
 ## covered-vault
 
 `CC3SUECAJSAC4PBV4QLUII7X5Y4WNVL5YGTBAQ4CHCAH6R3QLRYJUZHQ` on testnet (PUSD),

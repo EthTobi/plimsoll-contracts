@@ -126,8 +126,9 @@ All three contracts use the same TTL policy, defined in `plimsoll-types`:
 
 | Entry | Extended by |
 | --- | --- |
-| `Admin` (instance) | `__constructor`, `transfer_admin`, `upgrade`, `set_reporter`, `revoke` |
-| `Reporter(Address)` (persistent) | `set_reporter` (write), `get_reporter` / `role_of` (read) |
+| `Admin` (instance) | `__constructor`, `transfer_admin`, `propose_upgrade`, `execute_upgrade`, `cancel_upgrade`, `set_reporter`, `revoke` |
+| `Reporter(Address)` (persistent) | `set_reporter` (write), `get_reporter` / `role_of` (read), reporter URI and tag updates |
+| `ReporterUri(Address)`, `ReporterTags(Address)`, `Reporters`, `Category(Symbol)` (persistent) | update functions, `set_reporter`, `revoke`, `get_reporters_by_category` |
 
 **coverage-ledger**
 
@@ -137,7 +138,8 @@ All three contracts use the same TTL policy, defined in `plimsoll-types`:
 | `Asset(Address)` (persistent) | `list_asset` (write), `get_asset` (read) |
 | `Supply(Address)` (persistent) | `post_supply` (write), `get_supply`, `coverage`, `is_covered`, `coverage_status` (read) |
 | `NativeSupply(Address)` (persistent) | `enable_native_supply` (write), `native_supply_token`, `coverage`, `is_covered`, `coverage_status` (read) |
-| `Report(Address, Tier)` (persistent) | `post_reserve` (write), `get_report`, `get_reports`, `coverage`, `is_covered`, `coverage_status` (read) |
+| `Report(Address, Tier)` (persistent) | `post_reserve`, `retract_report` (write), `get_report`, `get_reports`, `coverage`, `is_covered`, `coverage_status` (read) |
+| `ReporterScore(Address)` (persistent) | `post_reserve`, `retract_report` (write), `get_reporter_score` (read) |
 
 **covered-vault**
 
@@ -189,6 +191,10 @@ Decides who may speak. Holds no money.
 | --- | --- | --- |
 | `Admin` | instance | `Address` |
 | `Reporter(Address)` | persistent, TTL extended on write and read | `ReporterInfo` |
+| `ReporterUri(Address)` | persistent, TTL extended on write and read | `String` (optional metadata URI) |
+| `ReporterTags(Address)` | persistent, TTL extended on write and read | `Vec<Symbol>` (at most five tags) |
+| `Reporters` | persistent, TTL extended on write and read | `Vec<Address>` (registered reporter addresses) |
+| `Category(Symbol)` | persistent, TTL extended on write and read | `Vec<Address>` (reporters currently carrying the tag) |
 | `PendingUpgrade` | instance | `PendingUpgrade` |
 
 **Functions**
@@ -201,13 +207,24 @@ Decides who may speak. Holds no money.
 | `revoke(reporter: Address)` | admin | `()` | `ReporterNotFound` | `reporter_revoked {reporter}` |
 | `role_of(reporter: Address)` | — | `Option<Role>` | — | — |
 | `get_reporter(reporter: Address)` | — | `Option<ReporterInfo>` | — | — |
+| `update_reporter_uri(reporter: Address, new_uri: String)` | reporter | `()` | `ReporterNotFound`, `InvalidUri` | `reporter_uri_updated {reporter} uri` |
+| `update_reporter_tags(reporter: Address, tags: Vec<Symbol>)` | reporter | `()` | `ReporterNotFound`, `TooManyTags`, `DuplicateTag` | `reporter_tags_updated {reporter} tags` |
+| `get_reporters_by_category(tag: Symbol)` | — | `Vec<Address>` | — | — |
 | `transfer_admin(new_admin: Address)` | admin and new_admin | `()` | — | `admin_transferred {new_admin}` |
 | `propose_upgrade(wasm_hash: BytesN<32>)` | admin | `()` | — | `upgrade_proposed {wasm_hash} executable_at_ledger` |
 | `execute_upgrade()` | admin | `()` | `UpgradeNotProposed`, `UpgradeDelayNotElapsed` | `upgrade_executed {wasm_hash}` |
 | `cancel_upgrade()` | admin | `()` | `UpgradeNotProposed` | `upgrade_cancelled {wasm_hash}` |
 | `pending_upgrade()` | — | `Option<PendingUpgrade>` | — | — |
 
-Errors (`RegistryError`): `ReporterNotFound = 1`, `InvalidName = 2`.
+Reporters may set zero to five unique category tags. Replacing tags updates the
+category indexes atomically. `get_reporters_by_category` returns every current
+member of the selected category. URI validation uses the reserve report rule:
+non-empty and at most 256 bytes. Existing reporter records remain
+compatible; URI and tags are stored under separate keys.
+
+Errors (`RegistryError`): `ReporterNotFound = 1`, `InvalidName = 2`,
+`UpgradeNotProposed = 3`, `UpgradeDelayNotElapsed = 4`, `InvalidUri = 5`,
+`TooManyTags = 6`, `DuplicateTag = 7`.
 Causes and remedies: [ERRORS.md](ERRORS.md#registryerror).
 
 ## coverage-ledger
@@ -228,6 +245,7 @@ Records what was said, and answers coverage questions.
 | `ReportBy(Address, Tier, Address)` | persistent | `ReserveReport`: the latest from one reporter at one tier for one asset |
 | `Reporters(Address, Tier)` | persistent | `Vec<Address>`: the reporters with a `ReportBy` entry at that tier, in the order they first posted; at most `MAX_REPORTERS_PER_TIER = 4` |
 | `Report(Address, Tier)` | persistent | `ReserveReport`: the v0.1 layout (one per tier). Read until migrated, never written; see [Upgrading a v0.1 deployment](#upgrading-a-v01-deployment) |
+| `ReporterScore(Address)` | persistent | `i32`: score; absent means zero |
 | `Alias(Address)` | persistent | `Address`: maps a deprecated asset SAC to its successor SAC |
 
 Every reporter keeps their own figure. Two auditors' reports coexist, and a
@@ -270,6 +288,8 @@ data layouts, with real testnet examples, are in [EVENTS.md](EVENTS.md).
 | `list_asset(sac: Address)` | none (permissionless) | `AssetRecord` | `NotAStellarAsset`, `AlreadyListed` | `asset_listed {sac} code, issuer` |
 | `post_supply(poster: Address, sac: Address, amount: i128, ledger: u32, breakdown_hash: BytesN<32>)` | poster | `()` | `NotSupplyPoster`, `AssetNotListed`, `InvalidAmount`, `FutureLedger`, `StaleLedger` | `supply_posted {sac} amount, ledger, breakdown_hash, poster` |
 | `post_reserve(reporter: Address, sac: Address, amount: i128, as_of: u64, doc_hash: BytesN<32>, doc_uri: String)` | reporter | `Tier` | `NotReporter`, `AssetNotListed`, `InvalidAmount`, `FutureTimestamp`, `StaleReport`, `InvalidUri`, `ImplausibleAmount`, `TooManyReporters` | `reserve_posted {sac, tier} amount, as_of, reporter, doc_hash, doc_uri` |
+| `retract_report(reporter: Address, sac: Address, tier: Tier)` | reporter | `()` | `ReportNotFound` | `reserve_report_retracted {sac, tier} reporter` |
+| `get_reporter_score(reporter: Address)` | — | `i32` | — | — |
 | `get_asset(sac)` | — | `Option<AssetRecord>` | — | — |
 | `get_supply(sac)` | — | `Option<SupplySnapshot>` | — | — |
 | `get_report(sac, tier: Tier)` | — | `Option<ReserveReport>` (the freshest report at that tier that counts) | — | — |
@@ -325,6 +345,12 @@ Rules:
   `amount == 0` is always allowed: no reserves at all is a statement the
   protocol exists to be able to carry, and unlike a small non-zero figure it
   cannot be the result of a unit slip.
+
+- A successful `post_reserve` increments the reporter's score by one. A
+  reporter may retract their own latest report at a tier with
+  `retract_report`; this removes that report and decrements the score by one.
+  Retraction is atomic with the index update. Scores are stored separately
+  from reporter records; reporters without a score entry read as zero.
 - `coverage(sac, min_tier)` picks, among the stored reports at tiers
   `>= min_tier` that count, the one with the latest `as_of`. Ties go to the
   higher tier, then to the reporter who first posted at that tier. It returns
@@ -355,7 +381,8 @@ Errors (`LedgerError`): `NotAStellarAsset = 1`, `AlreadyListed = 2`,
 `InvalidAmount = 6`, `FutureLedger = 7`, `StaleLedger = 8`,
 `FutureTimestamp = 9`, `StaleReport = 10`, `InvalidUri = 11`,
 `ImplausibleAmount = 12`, `TooManyReporters = 13`, `UpgradeNotProposed = 14`,
-`UpgradeDelayNotElapsed = 15`, `SelfAlias = 16`, `Paused = 17`.
+`UpgradeDelayNotElapsed = 15`, `SelfAlias = 16`, `Paused = 17`,
+`ReporterScoreOutOfRange = 18`, `ReportNotFound = 19`.
 Causes, remedies and the order they are checked in: [ERRORS.md](ERRORS.md#ledgererror).
 
 ### Emergency pause
@@ -480,6 +507,7 @@ covered. Withdrawals are never blocked.
 | `deposit(from: Address, amount: i128)` | from | `i128` new balance | `InvalidAmount`, `NotCovered` | `deposited {from} amount` |
 | `withdraw(to: Address, amount: i128)` | to | `i128` new balance | `InvalidAmount`, `InsufficientBalance` | `withdrawn {to} amount` |
 | `balance(of: Address)` | — | `i128` | — | — |
+| `get_balance()` | — | `i128` | — | — |
 | `config()` | — | `VaultConfig` | — | — |
 | `can_deposit()` | — | `bool` | — | — |
 
@@ -489,6 +517,9 @@ answer. It is true exactly when a positive deposit would pass the coverage
 gate, so a front end can show whether the vault is open without simulating a
 deposit and reading a `NotCovered` failure. It says nothing about the
 depositor's balance or authorisation.
+
+`get_balance()` reads the asset SAC balance held by the vault contract. It
+does not touch vault persistent storage or extend any TTL.
 
 Errors (`VaultError`): `InvalidAmount = 1`, `NotCovered = 2`,
 `InsufficientBalance = 3`. Causes and remedies, and the asset-contract errors a

@@ -56,9 +56,9 @@ codes as literal numbers, so a renumbering fails CI.
 | 2 | [`InvalidName`](#2-invalidname) | [`AlreadyListed`](#2-alreadylisted) | [`NotCovered`](#2-notcovered) |
 | 3 | | [`AssetNotListed`](#3-assetnotlisted) | [`InsufficientBalance`](#3-insufficientbalance) |
 | 4 | | [`NotSupplyPoster`](#4-notsupplyposter) | |
-| 5 | | [`NotReporter`](#5-notreporter) | |
-| 6 | | [`InvalidAmount`](#6-invalidamount) | |
-| 7 | | [`FutureLedger`](#7-futureledger) | |
+| 5 | [`InvalidUri`](#5-invaliduri) | [`NotReporter`](#5-notreporter) | |
+| 6 | [`TooManyTags`](#6-toomanytags) | [`InvalidAmount`](#6-invalidamount) | |
+| 7 | [`DuplicateTag`](#7-duplicatetag) | [`FutureLedger`](#7-futureledger) | |
 | 8 | | [`StaleLedger`](#8-staleledger) | |
 | 9 | | [`FutureTimestamp`](#9-futuretimestamp) | |
 | 10 | | [`StaleReport`](#10-stalereport) | |
@@ -68,6 +68,8 @@ codes as literal numbers, so a renumbering fails CI.
 | 14 | | [`UpgradeNotProposed`](#14-upgradenotproposed) | |
 | 15 | | [`UpgradeDelayNotElapsed`](#15-upgradedelaynotelapsed) | |
 | 16 | | [`Paused`](#16-paused) | |
+| 18 | | [`ReporterScoreOutOfRange`](#18-reporterscoreoutofrange) | |
+| 19 | | [`ReportNotFound`](#19-reportnotfound) | |
 
 ## RegistryError
 
@@ -90,6 +92,24 @@ so these errors reach maintainers rather than end users.
   bytes, not characters, so a 30-character name in a non-Latin script can
   exceed it.
 - **Remedy:** Use a short, non-empty display name of 1 to 64 bytes.
+
+### 5 `InvalidUri`
+
+- **Raised by:** `update_reporter_uri(reporter, new_uri)`.
+- **Cause:** The URI is empty or longer than 256 bytes.
+- **Remedy:** Use a non-empty URI of at most 256 bytes.
+
+### 6 `TooManyTags`
+
+- **Raised by:** `update_reporter_tags(reporter, tags)`.
+- **Cause:** More than five category tags were supplied.
+- **Remedy:** Supply at most five tags.
+
+### 7 `DuplicateTag`
+
+- **Raised by:** `update_reporter_tags(reporter, tags)`.
+- **Cause:** The tag list contains the same symbol more than once.
+- **Remedy:** Supply unique tags.
 
 ## LedgerError
 
@@ -263,6 +283,18 @@ when several apply the caller sees the first:
   to `unpause()`, or read `is_paused()` and `coverage_status(...)` first and
   show the paused state in the UI. `coverage`, `get_supply`, `get_reports`
   and `coverage_status` keep working while paused.
+
+### 18 `ReporterScoreOutOfRange`
+
+- **Raised by:** `post_reserve`, `retract_report`.
+- **Cause:** Updating the reporter score would overflow or underflow `i32`.
+- **Remedy:** The score cannot be changed further in that direction.
+
+### 19 `ReportNotFound`
+
+- **Raised by:** `retract_report(reporter, sac, tier)`.
+- **Cause:** The reporter has no report stored for that asset and tier.
+- **Remedy:** Check `get_reports(sac)` and retract only an existing report.
 
 ## VaultError
 
