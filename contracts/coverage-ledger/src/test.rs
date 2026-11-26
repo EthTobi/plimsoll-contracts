@@ -2523,4 +2523,5 @@ fn a_failing_native_query_without_a_snapshot_is_uncovered() {
         f.ledger
             .coverage_status(&f.sac, &0, &u64::MAX, &Tier::Transcribed),
         CoverageStatus::Uncovered
-    );}
+    );
+}
