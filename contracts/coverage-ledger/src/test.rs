@@ -2116,6 +2116,8 @@ fn asset_reporter_pairs_caps_a_page_at_fifty() {
         cursor = Some(total);
     }
     assert_eq!(total, 54);
+}
+
 // ---- emergency pause (#77) ------------------------------------------------
 
 #[test]
