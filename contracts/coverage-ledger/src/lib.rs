@@ -63,8 +63,9 @@ pub enum LedgerError {
     TooManyReporters = 13,
     UpgradeNotProposed = 14,
     UpgradeDelayNotElapsed = 15,
-    LedgerTooOld = 16,
-    NoReportToRetract = 17,
+    SelfAlias = 16,
+    LedgerTooOld = 17,
+    NoReportToRetract = 18,
 }
 
 #[contractevent]
