@@ -42,6 +42,8 @@ enum DataKey {
     Reporters(Address, Tier),
     /// Maps a deprecated asset SAC to its successor SAC (at most one hop).
     Alias(Address),
+    /// Index of all listed asset SACs, in listing order.
+    Assets,
 }
 
 #[contracterror]
