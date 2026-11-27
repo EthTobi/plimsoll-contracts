@@ -165,6 +165,18 @@ fn zero_amounts_rejected() {
 }
 
 #[test]
+fn get_balance_reads_the_on_chain_token_balance() {
+    let f = setup();
+    report(&f, 1_000 * UNIT, 1_000 * UNIT);
+    assert_eq!(f.vault.get_balance(), 0);
+    f.vault.deposit(&f.user, &(100 * UNIT));
+    assert_eq!(f.vault.get_balance(), 100 * UNIT);
+    assert_eq!(f.vault.get_balance(), f.token.balance(&f.vault.address));
+    f.vault.withdraw(&f.user, &(40 * UNIT));
+    assert_eq!(f.vault.get_balance(), 60 * UNIT);
+}
+
+#[test]
 fn config_round_trips() {
     let f = setup();
     let cfg = f.vault.config();
